@@ -378,6 +378,11 @@ impl ApplicationHandler<AppEvent> for ShotCraftApp {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        #[cfg(target_os = "linux")]
+        while gtk::events_pending() {
+            gtk::main_iteration_do(false);
+        }
+
         if let Some(pending) = &self.pending_live_capture {
             if std::time::Instant::now() >= pending.ready_at {
                 let pending = self.pending_live_capture.take().unwrap();
@@ -414,6 +419,11 @@ impl ApplicationHandler<AppEvent> for ShotCraftApp {
             flash.request_redraw();
             event_loop.set_control_flow(ControlFlow::Poll);
         } else {
+            #[cfg(target_os = "linux")]
+            event_loop.set_control_flow(ControlFlow::WaitUntil(
+                std::time::Instant::now() + std::time::Duration::from_millis(50),
+            ));
+            #[cfg(not(target_os = "linux"))]
             event_loop.set_control_flow(ControlFlow::Wait);
         }
     }
@@ -477,6 +487,9 @@ impl ApplicationHandler<AppEvent> for ShotCraftApp {
 }
 
 fn main() {
+    #[cfg(target_os = "linux")]
+    let _ = gtk::init();
+
     let mut builder = EventLoop::<AppEvent>::with_user_event();
     #[cfg(target_os = "macos")]
     builder.with_activation_policy(ActivationPolicy::Accessory);

@@ -14,7 +14,7 @@ Lightweight, fast cross-platform screenshot and live screen-annotation app writt
 
 ## Downloads
 
-Pre-built installers for **macOS** (`ShotCraft-v0.5.dmg`) and **Windows** (`ShotCraft-v0.5-Setup.exe`) are available on the [Releases](../../releases) page.
+Pre-built installers for **macOS** (`ShotCraft-v0.5.dmg`), **Windows** (`ShotCraft-v0.5-Setup.exe`), and **Linux** (`ShotCraft-v0.5-linux-amd64.deb` / `ShotCraft-v0.5-linux-x86_64.tar.gz`) are available on the [Releases](../../releases) page.
 
 ## Build from Source
 
@@ -27,6 +27,9 @@ cargo build --release
 
 # Package macOS DMG
 ./package_dmg.sh
+
+# Package Linux (.deb & .tar.gz)
+./package_linux.sh
 
 # Cross-compile & package Windows NSIS installer (requires x86_64-pc-windows-gnu & makensis)
 ./package_windows.sh

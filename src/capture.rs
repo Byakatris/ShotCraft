@@ -385,13 +385,15 @@ pub fn save_to_dir(img: &RgbaImage, dir: &Path) -> Result<PathBuf, String> {
     Ok(path)
 }
 
-/// Open the configured save folder in Finder (macOS) or Explorer (Windows).
+/// Open the configured save folder in Finder (macOS), Explorer (Windows), or xdg-open (Linux).
 pub fn open_folder(dir: &Path) {
     let _ = fs::create_dir_all(dir);
     #[cfg(target_os = "macos")]
     let _ = Command::new("open").arg(dir).spawn();
     #[cfg(target_os = "windows")]
     let _ = Command::new("explorer").arg(dir).spawn();
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let _ = Command::new("xdg-open").arg(dir).spawn();
 }
 
 /// Native folder picker (osascript on macOS, PowerShell FolderBrowserDialog on Windows).
@@ -442,6 +444,27 @@ if ($dlg.ShowDialog() -eq 'OK') { Write-Output $dlg.SelectedPath }
 
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
-        None
+        let out = Command::new("zenity")
+            .args([
+                "--file-selection",
+                "--directory",
+                "--title=Select ShotCraft Save Folder",
+            ])
+            .output()
+            .or_else(|_| {
+                Command::new("kdialog")
+                    .args(["--getexistingdirectory", "."])
+                    .output()
+            })
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        let path_str = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if path_str.is_empty() {
+            None
+        } else {
+            Some(PathBuf::from(path_str))
+        }
     }
 }

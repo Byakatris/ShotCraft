@@ -2568,6 +2568,7 @@ dependencies = [
  "glow",
  "glutin",
  "glutin-winit",
+ "gtk",
  "image 0.25.10",
  "muda",
  "objc2 0.6.5",
