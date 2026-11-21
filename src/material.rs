@@ -1,0 +1,1127 @@
+use std::f32::consts::FRAC_PI_2;
+
+use egui::epaint::{Mesh, Vertex};
+use egui::{Color32, ColorImage, Pos2, Rect, Response, Sense, Stroke, TextureId, Ui, Vec2};
+use image::RgbaImage;
+
+#[derive(Debug, Clone, Copy)]
+pub struct ThemeColors {
+    pub surface: Color32,
+    pub surface_container: Color32,
+    pub surface_container_high: Color32,
+    pub outline: Color32,
+    pub accent: Color32,
+    pub accent_hover: Color32,
+    pub on_accent: Color32,
+    pub on_surface: Color32,
+}
+
+const BG_STOPS: [(f32, Color32); 8] = [
+    (0.00, Color32::from_rgb(18, 20, 26)),
+    (0.16, Color32::from_rgb(14, 20, 36)),
+    (0.28, Color32::from_rgb(15, 22, 38)), // default deep navy
+    (0.42, Color32::from_rgb(24, 20, 44)),
+    (0.56, Color32::from_rgb(12, 32, 38)),
+    (0.70, Color32::from_rgb(16, 34, 24)),
+    (0.85, Color32::from_rgb(36, 18, 30)),
+    (1.00, Color32::from_rgb(10, 11, 14)),
+];
+
+const COLOR_STOPS: [(f32, Color32); 10] = [
+    (0.00, Color32::from_rgb(255, 255, 255)),
+    (0.11, Color32::from_rgb(255, 59, 48)),
+    (0.22, Color32::from_rgb(255, 149, 0)),
+    (0.34, Color32::from_rgb(255, 214, 10)),
+    (0.46, Color32::from_rgb(52, 199, 89)),
+    (0.56, Color32::from_rgb(94, 234, 212)), // default light teal
+    (0.70, Color32::from_rgb(10, 132, 255)),
+    (0.81, Color32::from_rgb(175, 82, 222)),
+    (0.91, Color32::from_rgb(255, 45, 85)),
+    (1.00, Color32::from_rgb(18, 20, 26)),
+];
+
+const COLOR_PRESETS: [f32; 9] = [0.00, 0.11, 0.22, 0.34, 0.46, 0.56, 0.70, 0.81, 1.00];
+
+impl ThemeColors {
+    pub fn from_positions(bg_pos: f32, accent_pos: f32) -> Self {
+        let surface = sample_stops(&BG_STOPS, bg_pos);
+        let surface_container = lighten(surface, 10);
+        let surface_container_high = lighten(surface, 24);
+        let outline = lighten(surface, 48);
+        let accent = sample_stops(&COLOR_STOPS, accent_pos);
+        let accent_hover = lighten(accent, 24);
+        let lum = 0.299 * accent.r() as f32 + 0.587 * accent.g() as f32 + 0.114 * accent.b() as f32;
+        let on_accent = if lum > 140.0 {
+            Color32::from_rgb(8, 20, 30)
+        } else {
+            Color32::WHITE
+        };
+        Self {
+            surface,
+            surface_container,
+            surface_container_high,
+            outline,
+            accent,
+            accent_hover,
+            on_accent,
+            on_surface: Color32::from_rgb(232, 239, 250),
+        }
+    }
+}
+
+fn lighten(c: Color32, delta: u8) -> Color32 {
+    Color32::from_rgb(
+        c.r().saturating_add(delta),
+        c.g().saturating_add(delta),
+        c.b().saturating_add(delta),
+    )
+}
+
+fn sample_stops(stops: &[(f32, Color32)], t: f32) -> Color32 {
+    let t = t.clamp(0.0, 1.0);
+    for win in stops.windows(2) {
+        let (t0, c0) = win[0];
+        let (t1, c1) = win[1];
+        if t <= t1 {
+            let f = ((t - t0) / (t1 - t0).max(1e-5)).clamp(0.0, 1.0);
+            return lerp_color(c0, c1, f);
+        }
+    }
+    stops.last().unwrap().1
+}
+
+pub fn color_from_slider(t: f32) -> Color32 {
+    sample_stops(&COLOR_STOPS, t)
+}
+
+pub fn lerp_color(a: Color32, b: Color32, t: f32) -> Color32 {
+    let t = t.clamp(0.0, 1.0);
+    let lerp = |x: u8, y: u8| -> u8 { (x as f32 + (y as f32 - x as f32) * t).round() as u8 };
+    Color32::from_rgba_unmultiplied(
+        lerp(a.r(), b.r()),
+        lerp(a.g(), b.g()),
+        lerp(a.b(), b.b()),
+        lerp(a.a(), b.a()),
+    )
+}
+
+/// Draw a rounded-rectangle textured mesh with explicit global UV rect mapping onto `local_rect`.
+pub fn draw_rounded_texture_uv(
+    painter: &egui::Painter,
+    tex_id: TextureId,
+    virtual_size: Vec2,
+    global_rect: Rect,
+    local_rect: Rect,
+    radius: f32,
+    tint: Color32,
+) {
+    if local_rect.width() <= 0.5 || local_rect.height() <= 0.5 {
+        return;
+    }
+    let r = radius
+        .min(local_rect.width() * 0.5)
+        .min(local_rect.height() * 0.5)
+        .max(0.0);
+    let mut perimeter = Vec::with_capacity(36);
+    if r < 0.5 {
+        perimeter.push(local_rect.left_top());
+        perimeter.push(local_rect.right_top());
+        perimeter.push(local_rect.right_bottom());
+        perimeter.push(local_rect.left_bottom());
+    } else {
+        let segs = 7;
+        let corners = [
+            (Pos2::new(local_rect.right() - r, local_rect.top() + r), -FRAC_PI_2, 0.0),
+            (Pos2::new(local_rect.right() - r, local_rect.bottom() - r), 0.0, FRAC_PI_2),
+            (Pos2::new(local_rect.left() + r, local_rect.bottom() - r), FRAC_PI_2, std::f32::consts::PI),
+            (Pos2::new(local_rect.left() + r, local_rect.top() + r), std::f32::consts::PI, std::f32::consts::PI + FRAC_PI_2),
+        ];
+        for (center, a0, a1) in corners {
+            for i in 0..=segs {
+                let t = i as f32 / segs as f32;
+                let a = a0 + (a1 - a0) * t;
+                perimeter.push(Pos2::new(center.x + r * a.cos(), center.y + r * a.sin()));
+            }
+        }
+    }
+
+    let mut mesh = Mesh::with_texture(tex_id);
+    let offset = global_rect.min - local_rect.min;
+    let uv_of = |lp: Pos2| -> Pos2 {
+        let gp = lp + offset;
+        Pos2::new(
+            (gp.x / virtual_size.x).clamp(0.0, 1.0),
+            (gp.y / virtual_size.y).clamp(0.0, 1.0),
+        )
+    };
+
+    let center = local_rect.center();
+    mesh.vertices.push(Vertex {
+        pos: center,
+        uv: uv_of(center),
+        color: tint,
+    });
+    for &p in &perimeter {
+        mesh.vertices.push(Vertex {
+            pos: p,
+            uv: uv_of(p),
+            color: tint,
+        });
+    }
+    let n = perimeter.len() as u32;
+    for i in 0..n {
+        let next = (i + 1) % n;
+        mesh.indices.push(0);
+        mesh.indices.push(1 + i);
+        mesh.indices.push(1 + next);
+    }
+    painter.add(egui::Shape::mesh(mesh));
+}
+
+/// 2x stronger blur texture for Text readability backdrop.
+pub fn make_strong_text_blur_image(src: &RgbaImage) -> ColorImage {
+    let factor = 4u32;
+    let w = (src.width() / factor).max(1) as usize;
+    let h = (src.height() / factor).max(1) as usize;
+    let mut buf = vec![[0f32; 3]; w * h];
+    for y in 0..h {
+        let sy = ((y as u32) * factor).min(src.height() - 1);
+        for x in 0..w {
+            let sx = ((x as u32) * factor).min(src.width() - 1);
+            let p = src.get_pixel(sx, sy);
+            buf[y * w + x] = [p[0] as f32, p[1] as f32, p[2] as f32];
+        }
+    }
+    let mut tmp = vec![[0f32; 3]; w * h];
+    let r = 6usize;
+    for _ in 0..2 {
+        for y in 0..h {
+            let row = y * w;
+            let mut rs = 0.0;
+            let mut gs = 0.0;
+            let mut bs = 0.0;
+            let mut cnt = 0.0;
+            for nx in 0..=r.min(w - 1) {
+                let c = buf[row + nx];
+                rs += c[0];
+                gs += c[1];
+                bs += c[2];
+                cnt += 1.0;
+            }
+            for x in 0..w {
+                tmp[row + x] = [rs / cnt, gs / cnt, bs / cnt];
+                let add_x = x + r + 1;
+                if add_x < w {
+                    let c = buf[row + add_x];
+                    rs += c[0];
+                    gs += c[1];
+                    bs += c[2];
+                    cnt += 1.0;
+                }
+                if x >= r {
+                    let c = buf[row + x - r];
+                    rs -= c[0];
+                    gs -= c[1];
+                    bs -= c[2];
+                    cnt -= 1.0;
+                }
+            }
+        }
+        for x in 0..w {
+            let mut rs = 0.0;
+            let mut gs = 0.0;
+            let mut bs = 0.0;
+            let mut cnt = 0.0;
+            for ny in 0..=r.min(h - 1) {
+                let c = tmp[ny * w + x];
+                rs += c[0];
+                gs += c[1];
+                bs += c[2];
+                cnt += 1.0;
+            }
+            for y in 0..h {
+                buf[y * w + x] = [rs / cnt, gs / cnt, bs / cnt];
+                let add_y = y + r + 1;
+                if add_y < h {
+                    let c = tmp[add_y * w + x];
+                    rs += c[0];
+                    gs += c[1];
+                    bs += c[2];
+                    cnt += 1.0;
+                }
+                if y >= r {
+                    let c = tmp[(y - r) * w + x];
+                    rs -= c[0];
+                    gs -= c[1];
+                    bs -= c[2];
+                    cnt -= 1.0;
+                }
+            }
+        }
+    }
+    let mut rgba = Vec::with_capacity(w * h * 4);
+    for c in buf {
+        rgba.push(c[0].round().clamp(0.0, 255.0) as u8);
+        rgba.push(c[1].round().clamp(0.0, 255.0) as u8);
+        rgba.push(c[2].round().clamp(0.0, 255.0) as u8);
+        rgba.push(255);
+    }
+    ColorImage::from_rgba_unmultiplied([w, h], &rgba)
+}
+
+/// Draw a rounded-rectangle textured mesh with screen-space UV mapping.
+pub fn draw_rounded_texture(
+    painter: &egui::Painter,
+    tex_id: TextureId,
+    screen_size: Vec2,
+    rect: Rect,
+    radius: f32,
+    tint: Color32,
+) {
+    draw_rounded_texture_uv(painter, tex_id, screen_size, rect, rect, radius, tint);
+}
+
+pub fn draw_m3_panel(painter: &egui::Painter, rect: Rect, radius: f32, theme: &ThemeColors) {
+    // Subtle Apple-style soft ambient drop shadow + glass rim highlight
+    painter.rect_filled(
+        rect.expand(1.5).translate(Vec2::new(0.0, 2.0)),
+        radius + 1.5,
+        Color32::from_rgba_unmultiplied(0, 0, 0, 72),
+    );
+    painter.rect_filled(rect, radius, theme.surface);
+    painter.rect_stroke(
+        rect,
+        radius,
+        Stroke::new(1.1_f32, theme.outline),
+        egui::StrokeKind::Inside,
+    );
+    painter.rect_stroke(
+        rect.shrink(1.0),
+        (radius - 1.0).max(0.0),
+        Stroke::new(0.8_f32, Color32::from_rgba_unmultiplied(255, 255, 255, 22)),
+        egui::StrokeKind::Inside,
+    );
+}
+
+pub fn draw_m3_selection_frame(
+    painter: &egui::Painter,
+    sharp_tex: TextureId,
+    screen_size: Vec2,
+    sel: Rect,
+    show_handles: bool,
+    theme: &ThemeColors,
+) {
+    let radius = 8.0_f32.min(sel.width() * 0.2).min(sel.height() * 0.2);
+    draw_rounded_texture(painter, sharp_tex, screen_size, sel, radius, Color32::WHITE);
+
+    painter.rect_stroke(
+        sel,
+        radius,
+        Stroke::new(1.8_f32, theme.accent),
+        egui::StrokeKind::Outside,
+    );
+
+    if show_handles {
+        let handle_pts = [
+            sel.left_top(),
+            Pos2::new(sel.center().x, sel.top()),
+            sel.right_top(),
+            Pos2::new(sel.right(), sel.center().y),
+            sel.right_bottom(),
+            Pos2::new(sel.center().x, sel.bottom()),
+            sel.left_bottom(),
+            Pos2::new(sel.left(), sel.center().y),
+        ];
+        for p in handle_pts {
+            painter.circle_filled(p, 5.5, theme.accent);
+            painter.circle_stroke(p, 5.5, Stroke::new(1.3_f32, theme.surface));
+        }
+    }
+}
+
+/// Apple SwiftUI / CASpringAnimation-style damped harmonic spring physics.
+/// Preserves velocity across interruptions and settles with organic overshoot.
+pub fn spring_animate(
+    ctx: &egui::Context,
+    id: egui::Id,
+    target: f32,
+    response: f32,
+    damping_fraction: f32,
+) -> f32 {
+    let dt = ctx.input(|i| i.stable_dt).clamp(0.001, 0.05);
+    let (mut x, mut v) = ctx
+        .data(|d| d.get_temp::<(f32, f32)>(id))
+        .unwrap_or((target, 0.0));
+
+    let omega = std::f32::consts::TAU / response.max(0.05);
+    let stiffness = omega * omega;
+    let damping = 2.0 * damping_fraction.clamp(0.2, 1.5) * omega;
+
+    // 2 substeps for rock-solid stability at any frame rate
+    let sub_dt = dt * 0.5;
+    for _ in 0..2 {
+        let accel = -stiffness * (x - target) - damping * v;
+        v += accel * sub_dt;
+        x += v * sub_dt;
+    }
+
+    if (x - target).abs() < 0.0008 && v.abs() < 0.0008 {
+        x = target;
+        v = 0.0;
+    } else {
+        ctx.request_repaint();
+    }
+
+    ctx.data_mut(|d| d.insert_temp(id, (x, v)));
+    x
+}
+
+/// Tactile Apple-style spring-bounce scale for any clickable widget:
+/// squashes on press, springs back with organic overshoot on release/hover.
+pub fn spring_scale(ctx: &egui::Context, id: egui::Id, hovered: bool, pressed: bool) -> f32 {
+    let target = if pressed {
+        0.91
+    } else if hovered {
+        1.05
+    } else {
+        1.0
+    };
+    spring_animate(ctx, id.with("apple_sp_s"), target, 0.22, 0.58).clamp(0.86, 1.12)
+}
+
+/// Morphs corner radius smoothly between full circle/capsule (`h * 0.5`) when resting
+/// and rounded square (`7.0`) when active or pressed.
+pub fn morph_radius(
+    ctx: &egui::Context,
+    id: egui::Id,
+    height: f32,
+    squared: bool,
+) -> f32 {
+    let t = spring_animate(
+        ctx,
+        id.with("apple_sp_r"),
+        if squared { 1.0 } else { 0.0 },
+        0.25,
+        0.70,
+    )
+    .clamp(0.0, 1.0);
+    let full_round = height * 0.5;
+    let rounded_sq = 7.0_f32.min(full_round);
+    full_round + (rounded_sq - full_round) * t
+}
+
+pub fn m3_tool_button(
+    ui: &mut Ui,
+    id_salt: &str,
+    size: Vec2,
+    active: bool,
+    tooltip: &str,
+    theme: &ThemeColors,
+    draw_icon: impl FnOnce(&egui::Painter, Rect, Color32),
+) -> Response {
+    let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
+    let hovered = resp.hovered();
+    let pressed = resp.is_pointer_button_down_on();
+    let id = ui.make_persistent_id(id_salt);
+    let scale = spring_scale(ui.ctx(), id, hovered, pressed);
+    let draw_rect = Rect::from_center_size(rect.center(), rect.size() * scale);
+
+    let t = spring_animate(
+        ui.ctx(),
+        id.with("active_t"),
+        if active { 1.0 } else { 0.0 },
+        0.24,
+        0.74,
+    )
+    .clamp(0.0, 1.0);
+    let radius = morph_radius(ui.ctx(), id, draw_rect.height(), active || pressed);
+
+    let base_fill = if hovered && !active {
+        lighten(theme.surface_container_high, 14)
+    } else {
+        theme.surface_container_high
+    };
+    let active_fill = if hovered && active {
+        theme.accent_hover
+    } else {
+        theme.accent
+    };
+    let fill = lerp_color(base_fill, active_fill, t);
+    let icon_color = lerp_color(theme.on_surface, theme.on_accent, t);
+
+    let painter = ui.painter();
+    painter.rect_filled(draw_rect, radius, fill);
+    if t < 0.5 && hovered {
+        painter.rect_stroke(
+            draw_rect,
+            radius,
+            Stroke::new(
+                1.0_f32,
+                Color32::from_rgba_unmultiplied(theme.accent.r(), theme.accent.g(), theme.accent.b(), 140),
+            ),
+            egui::StrokeKind::Inside,
+        );
+    }
+
+    draw_icon(painter, draw_rect.shrink(6.0 * scale), icon_color);
+    resp.on_hover_text(tooltip)
+}
+
+pub fn m3_action_button(
+    ui: &mut Ui,
+    size: Vec2,
+    primary: bool,
+    tooltip: &str,
+    theme: &ThemeColors,
+    draw_icon: impl FnOnce(&egui::Painter, Rect, Color32),
+) -> Response {
+    let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
+    let hovered = resp.hovered();
+    let pressed = resp.is_pointer_button_down_on();
+    let scale = spring_scale(ui.ctx(), resp.id, hovered, pressed);
+    let draw_rect = Rect::from_center_size(rect.center(), rect.size() * scale);
+    let radius = morph_radius(ui.ctx(), resp.id, draw_rect.height(), pressed);
+    let painter = ui.painter();
+
+    let (fill, fg) = if primary {
+        (
+            if hovered { theme.accent_hover } else { theme.accent },
+            theme.on_accent,
+        )
+    } else {
+        (
+            if hovered {
+                lighten(theme.surface_container_high, 14)
+            } else {
+                theme.surface_container_high
+            },
+            theme.on_surface,
+        )
+    };
+
+    painter.rect_filled(draw_rect, radius, fill);
+    if !primary {
+        painter.rect_stroke(
+            draw_rect,
+            radius,
+            Stroke::new(
+                1.0_f32,
+                if hovered { theme.accent } else { theme.outline },
+            ),
+            egui::StrokeKind::Inside,
+        );
+    }
+
+    draw_icon(painter, draw_rect.shrink(6.0 * scale), fg);
+    resp.on_hover_text(tooltip)
+}
+
+fn draw_teardrop(
+    painter: &egui::Painter,
+    center: Pos2,
+    r: f32,
+    tip: Pos2,
+    fill: Color32,
+    halo: Color32,
+) {
+    let to_tip = tip - center;
+    let d = to_tip.length();
+    if d <= r + 1.5 {
+        painter.circle_filled(center, r + 1.6, halo);
+        painter.circle_filled(center, r, fill);
+        painter.circle_stroke(center, r + 0.8, Stroke::new(1.6_f32, Color32::WHITE));
+        return;
+    }
+
+    let dir_angle = to_tip.y.atan2(to_tip.x);
+    let alpha = (r / d).clamp(-0.99, 0.99).acos();
+    let a_start = dir_angle + alpha;
+    let a_end = dir_angle + std::f32::consts::TAU - alpha;
+
+    let arc_segs = 20usize;
+    let mut pts = Vec::with_capacity(arc_segs + 4);
+    for i in 0..=arc_segs {
+        let f = i as f32 / arc_segs as f32;
+        let a = a_start + (a_end - a_start) * f;
+        pts.push(Pos2::new(center.x + r * a.cos(), center.y + r * a.sin()));
+    }
+    // Slightly rounded tip cap so the tail isn't needle-sharp
+    let perp = Vec2::new(-to_tip.y / d, to_tip.x / d) * 1.4;
+    pts.push(tip - perp);
+    pts.push(tip + perp);
+
+    painter.add(egui::epaint::PathShape::convex_polygon(
+        pts.clone(),
+        halo,
+        Stroke::new(2.8_f32, halo),
+    ));
+    painter.add(egui::epaint::PathShape::convex_polygon(
+        pts,
+        fill,
+        Stroke::new(1.6_f32, Color32::WHITE),
+    ));
+}
+
+pub fn m3_color_slider(
+    ui: &mut Ui,
+    width: f32,
+    color_pos: &mut f32,
+    theme: &ThemeColors,
+) -> Color32 {
+    let total_size = Vec2::new(width.max(120.0), 28.0);
+    let (rect, _) = ui.allocate_exact_size(total_size, Sense::hover());
+    let track_h = 9.0;
+    let track_w = (total_size.x - 14.0).max(40.0);
+    let track_center = Pos2::new(rect.center().x, rect.bottom() - 7.0);
+    let track_rect = Rect::from_center_size(track_center, Vec2::new(track_w, track_h));
+
+    // 9 clickable standard color circles snug right above the color slider
+    let presets_y = rect.top() + 5.5;
+    for (idx, &preset_t) in COLOR_PRESETS.iter().enumerate() {
+        let px = track_rect.left() + track_rect.width() * preset_t;
+        let dot_center = Pos2::new(px, presets_y);
+        let hit_rect = Rect::from_center_size(dot_center, Vec2::splat(13.0));
+        let preset_resp = ui.interact(
+            hit_rect,
+            ui.make_persistent_id(("m3_color_preset", idx)),
+            Sense::click(),
+        );
+        if preset_resp.clicked() {
+            *color_pos = preset_t;
+        }
+        let col = sample_stops(&COLOR_STOPS, preset_t);
+        let selected = (*color_pos - preset_t).abs() < 0.03;
+        let dot_scale = spring_scale(
+            ui.ctx(),
+            preset_resp.id,
+            preset_resp.hovered(),
+            preset_resp.is_pointer_button_down_on(),
+        );
+        let r = (if selected { 4.7 } else { 4.0 }) * dot_scale;
+        ui.painter().circle_filled(dot_center, r, col);
+        ui.painter().circle_stroke(
+            dot_center,
+            r,
+            Stroke::new(
+                if selected { 1.4_f32 } else { 0.9_f32 },
+                if selected { Color32::WHITE } else { theme.outline },
+            ),
+        );
+    }
+
+    let slider_hit = Rect::from_min_max(
+        Pos2::new(rect.left(), rect.top() + 11.0),
+        rect.max,
+    );
+    let resp = ui.interact(
+        slider_hit,
+        ui.make_persistent_id("m3_color_track_interact"),
+        Sense::click_and_drag(),
+    );
+
+    if resp.dragged() || resp.clicked() {
+        if let Some(pos) = resp.interact_pointer_pos() {
+            *color_pos = ((pos.x - track_rect.left()) / track_rect.width()).clamp(0.0, 1.0);
+        }
+    }
+
+    let current = sample_stops(&COLOR_STOPS, *color_pos);
+    let active = resp.dragged() || resp.is_pointer_button_down_on();
+    let vis_pos = if active {
+        ui.ctx().data_mut(|d| {
+            d.insert_temp(ui.make_persistent_id("m3_color_vis_pos"), (*color_pos, 0.0_f32));
+        });
+        *color_pos
+    } else {
+        spring_animate(
+            ui.ctx(),
+            ui.make_persistent_id("m3_color_vis_pos"),
+            *color_pos,
+            0.24,
+            0.72,
+        )
+        .clamp(0.0, 1.0)
+    };
+    let painter = ui.painter().with_clip_rect(ui.ctx().screen_rect());
+    draw_stops_track(&painter, track_rect, &COLOR_STOPS, theme.outline);
+
+    let thumb_x = track_rect.left() + track_rect.width() * vis_pos;
+    let base_y = track_rect.center().y;
+    let pop_t = ui
+        .ctx()
+        .animate_bool_with_time(ui.make_persistent_id("m3_color_droplet"), active, 0.14);
+
+    // Compact downward teardrop
+    let drop_offset = 17.5 * pop_t;
+    let drop_r = 6.0 + 6.5 * pop_t;
+    let drop_center = Pos2::new(thumb_x, base_y + drop_offset);
+    let tip = Pos2::new(thumb_x, base_y + 1.0);
+    draw_teardrop(&painter, drop_center, drop_r, tip, current, theme.surface);
+
+    if pop_t > 0.05 {
+        let half_h = (track_h * 0.5 + 2.5) * pop_t;
+        let bar = Rect::from_center_size(Pos2::new(thumb_x, base_y), Vec2::new(2.4, half_h * 2.0));
+        painter.rect_filled(bar, 1.2, Color32::WHITE);
+    }
+
+    resp.on_hover_text("Color");
+    current
+}
+
+fn draw_simple_stops_slider(
+    ui: &mut Ui,
+    pos_val: &mut f32,
+    stops: &[(f32, Color32)],
+    theme: &ThemeColors,
+) -> bool {
+    let total_size = Vec2::new(186.0, 30.0);
+    let (rect, resp) = ui.allocate_exact_size(total_size, Sense::click_and_drag());
+    let track_h = 10.0;
+    let track_rect = Rect::from_center_size(rect.center(), Vec2::new(total_size.x - 16.0, track_h));
+
+    let mut changed = false;
+    if resp.dragged() || resp.clicked() {
+        if let Some(pos) = resp.interact_pointer_pos() {
+            *pos_val = ((pos.x - track_rect.left()) / track_rect.width()).clamp(0.0, 1.0);
+            changed = true;
+        }
+    }
+
+    let current = sample_stops(stops, *pos_val);
+    draw_stops_track(ui.painter(), track_rect, stops, theme.outline);
+
+    let thumb_x = track_rect.left() + track_rect.width() * *pos_val;
+    let c = Pos2::new(thumb_x, track_rect.center().y);
+    ui.painter().circle_filled(c, 8.0, current);
+    ui.painter()
+        .circle_stroke(c, 8.0, Stroke::new(1.5_f32, Color32::WHITE));
+
+    changed
+}
+
+pub fn m3_bg_slider(ui: &mut Ui, bg_pos: &mut f32, theme: &ThemeColors) -> bool {
+    draw_simple_stops_slider(ui, bg_pos, &BG_STOPS, theme)
+}
+
+pub fn m3_accent_slider(ui: &mut Ui, accent_pos: &mut f32, theme: &ThemeColors) -> bool {
+    draw_simple_stops_slider(ui, accent_pos, &COLOR_STOPS, theme)
+}
+
+fn draw_stops_track(
+    painter: &egui::Painter,
+    track_rect: Rect,
+    stops: &[(f32, Color32)],
+    outline: Color32,
+) {
+    let r = track_rect.height() * 0.5;
+    if let Some((_, first_c)) = stops.first() {
+        painter.circle_filled(Pos2::new(track_rect.left() + r, track_rect.center().y), r, *first_c);
+    }
+    if let Some((_, last_c)) = stops.last() {
+        painter.circle_filled(Pos2::new(track_rect.right() - r, track_rect.center().y), r, *last_c);
+    }
+    let inner = Rect::from_min_max(
+        Pos2::new(track_rect.left() + r, track_rect.top()),
+        Pos2::new(track_rect.right() - r, track_rect.bottom()),
+    );
+    let mut mesh = Mesh::default();
+    let n = stops.len();
+    for (idx, &(stop_t, col)) in stops.iter().enumerate() {
+        let x = inner.left() + inner.width() * stop_t;
+        mesh.vertices.push(Vertex {
+            pos: Pos2::new(x, inner.top()),
+            uv: Pos2::ZERO,
+            color: col,
+        });
+        mesh.vertices.push(Vertex {
+            pos: Pos2::new(x, inner.bottom()),
+            uv: Pos2::ZERO,
+            color: col,
+        });
+        if idx + 1 < n {
+            let base = (idx * 2) as u32;
+            mesh.indices
+                .extend_from_slice(&[base, base + 2, base + 1, base + 1, base + 2, base + 3]);
+        }
+    }
+    painter.add(egui::Shape::mesh(mesh));
+    painter.rect_stroke(
+        track_rect,
+        r,
+        Stroke::new(1.0_f32, outline),
+        egui::StrokeKind::Outside,
+    );
+}
+
+const SIZE_PRESETS: [f32; 5] = [2.0, 5.0, 10.0, 15.0, 20.0];
+
+/// Material 3 Universal Size Slider (1.5x wider) with 5 preset size circles above the track.
+pub fn m3_size_slider(ui: &mut Ui, value: &mut f32, min: f32, max: f32, theme: &ThemeColors) {
+    let total_size = Vec2::new(138.0, 28.0);
+    let (rect, _) = ui.allocate_exact_size(total_size, Sense::hover());
+
+    let track_h = 8.0;
+    let track_center = Pos2::new(rect.center().x, rect.bottom() - 7.0);
+    let track_rect = Rect::from_center_size(track_center, Vec2::new(total_size.x - 14.0, track_h));
+
+    // 5 clickable standard size circles (2, 5, 10, 15, 20) snug above the size slider
+    let presets_y = rect.top() + 5.5;
+    for (idx, &sz) in SIZE_PRESETS.iter().enumerate() {
+        let pt = ((sz - min) / (max - min)).clamp(0.0, 1.0);
+        let px = track_rect.left() + track_rect.width() * pt;
+        let dot_center = Pos2::new(px, presets_y);
+        let hit_rect = Rect::from_center_size(dot_center, Vec2::splat(13.0));
+        let preset_resp = ui.interact(
+            hit_rect,
+            ui.make_persistent_id(("m3_size_preset", idx)),
+            Sense::click(),
+        );
+        if preset_resp.clicked() {
+            *value = sz.clamp(min, max);
+        }
+        let selected = (*value - sz).abs() < 0.6;
+        let base_r = 2.2 + 2.6 * pt;
+        let dot_scale = spring_scale(
+            ui.ctx(),
+            preset_resp.id,
+            preset_resp.hovered(),
+            preset_resp.is_pointer_button_down_on(),
+        );
+        let r = (if selected { base_r + 0.6 } else { base_r }) * dot_scale;
+        let fill = if selected {
+            theme.accent
+        } else if preset_resp.hovered() {
+            theme.on_surface
+        } else {
+            Color32::from_rgba_unmultiplied(theme.on_surface.r(), theme.on_surface.g(), theme.on_surface.b(), 150)
+        };
+        ui.painter().circle_filled(dot_center, r, fill);
+        ui.painter().circle_stroke(
+            dot_center,
+            r,
+            Stroke::new(
+                if selected { 1.3_f32 } else { 0.8_f32 },
+                if selected { Color32::WHITE } else { theme.outline },
+            ),
+        );
+        preset_resp.on_hover_text(format!("{} px", sz as u32));
+    }
+
+    let slider_hit = Rect::from_min_max(
+        Pos2::new(rect.left(), rect.top() + 11.0),
+        rect.max,
+    );
+    let resp = ui.interact(
+        slider_hit,
+        ui.make_persistent_id("m3_size_track_interact"),
+        Sense::click_and_drag(),
+    );
+
+    if resp.dragged() || resp.clicked() {
+        if let Some(pos) = resp.interact_pointer_pos() {
+            let t = ((pos.x - track_rect.left()) / track_rect.width()).clamp(0.0, 1.0);
+            *value = min + t * (max - min);
+        }
+    }
+
+    let t = ((*value - min) / (max - min)).clamp(0.0, 1.0);
+    let active = resp.dragged() || resp.is_pointer_button_down_on();
+    let vis_t = if active {
+        ui.ctx().data_mut(|d| {
+            d.insert_temp(ui.make_persistent_id("m3_size_vis_t"), (t, 0.0_f32));
+        });
+        t
+    } else {
+        spring_animate(
+            ui.ctx(),
+            ui.make_persistent_id("m3_size_vis_t"),
+            t,
+            0.24,
+            0.72,
+        )
+        .clamp(0.0, 1.0)
+    };
+    let painter = ui.painter().with_clip_rect(ui.ctx().screen_rect());
+
+    painter.rect_filled(track_rect, track_h * 0.5, theme.surface_container_high);
+    let fill_w = (track_rect.width() * vis_t).max(track_h);
+    let fill_rect = Rect::from_min_size(track_rect.min, Vec2::new(fill_w, track_h));
+    painter.rect_filled(fill_rect, track_h * 0.5, theme.accent);
+
+    let thumb_x = track_rect.left() + track_rect.width() * vis_t;
+    let base_y = track_rect.center().y;
+    let pop_t = ui
+        .ctx()
+        .animate_bool_with_time(ui.make_persistent_id("m3_size_droplet"), active, 0.14);
+
+    // Compact downward teardrop
+    let drop_offset = 17.5 * pop_t;
+    let drop_r = 6.0 + 7.2 * pop_t;
+    let drop_center = Pos2::new(thumb_x, base_y + drop_offset);
+    let tip = Pos2::new(thumb_x, base_y + 1.0);
+    draw_teardrop(&painter, drop_center, drop_r, tip, theme.accent, theme.surface);
+
+    if pop_t > 0.05 {
+        let half_h = (track_h * 0.5 + 2.5) * pop_t;
+        let bar = Rect::from_center_size(Pos2::new(thumb_x, base_y), Vec2::new(2.4, half_h * 2.0));
+        painter.rect_filled(bar, 1.2, Color32::WHITE);
+    }
+
+    if pop_t > 0.3 {
+        painter.text(
+            drop_center,
+            egui::Align2::CENTER_CENTER,
+            format!("{:.0}", *value),
+            egui::FontId::proportional(11.0),
+            theme.on_accent,
+        );
+    }
+
+    resp.on_hover_text(format!("Size: {:.0} px", *value));
+}
+
+/// Vertical Material 3 Color Slider (in right column of vertical bar) with 9 preset circles snugly to the left of the track.
+pub fn m3_color_slider_vertical(
+    ui: &mut Ui,
+    height: f32,
+    color_pos: &mut f32,
+    theme: &ThemeColors,
+) -> Color32 {
+    let total_size = Vec2::new(32.0, height.max(120.0));
+    let (rect, _) = ui.allocate_exact_size(total_size, Sense::hover());
+    let track_w = 9.0;
+    let track_center = Pos2::new(rect.right() - 8.5, rect.center().y);
+    let track_rect = Rect::from_center_size(track_center, Vec2::new(track_w, total_size.y - 14.0));
+
+    // 9 clickable standard color circles snugly to the left of the vertical track
+    let presets_x = rect.left() + 6.5;
+    for (idx, &preset_t) in COLOR_PRESETS.iter().enumerate() {
+        let py = track_rect.top() + track_rect.height() * preset_t;
+        let dot_center = Pos2::new(presets_x, py);
+        let hit_rect = Rect::from_center_size(dot_center, Vec2::splat(13.0));
+        let preset_resp = ui.interact(
+            hit_rect,
+            ui.make_persistent_id(("m3_vcolor_preset", idx)),
+            Sense::click(),
+        );
+        if preset_resp.clicked() {
+            *color_pos = preset_t;
+        }
+        let col = sample_stops(&COLOR_STOPS, preset_t);
+        let selected = (*color_pos - preset_t).abs() < 0.03;
+        let r = if selected || preset_resp.hovered() { 4.6 } else { 3.8 };
+        ui.painter().circle_filled(dot_center, r, col);
+        ui.painter().circle_stroke(
+            dot_center,
+            r,
+            Stroke::new(
+                if selected { 1.4_f32 } else { 0.8_f32 },
+                if selected { Color32::WHITE } else { theme.outline },
+            ),
+        );
+    }
+
+    let slider_hit = Rect::from_min_max(Pos2::new(rect.left() + 12.0, rect.top()), rect.max);
+    let resp = ui.interact(
+        slider_hit,
+        ui.make_persistent_id("m3_vcolor_track_interact"),
+        Sense::click_and_drag(),
+    );
+
+    if resp.dragged() || resp.clicked() {
+        if let Some(pos) = resp.interact_pointer_pos() {
+            *color_pos = ((pos.y - track_rect.top()) / track_rect.height()).clamp(0.0, 1.0);
+        }
+    }
+
+    let current = sample_stops(&COLOR_STOPS, *color_pos);
+    let screen_rect = ui.ctx().screen_rect();
+    let painter = ui.painter().with_clip_rect(screen_rect);
+
+    let r = track_w * 0.5;
+    painter.circle_filled(
+        Pos2::new(track_rect.center().x, track_rect.top() + r),
+        r,
+        COLOR_STOPS[0].1,
+    );
+    painter.circle_filled(
+        Pos2::new(track_rect.center().x, track_rect.bottom() - r),
+        r,
+        COLOR_STOPS.last().unwrap().1,
+    );
+    let inner = Rect::from_min_max(
+        Pos2::new(track_rect.left(), track_rect.top() + r),
+        Pos2::new(track_rect.right(), track_rect.bottom() - r),
+    );
+    let mut mesh = Mesh::default();
+    let n = COLOR_STOPS.len();
+    for (idx, &(stop_t, col)) in COLOR_STOPS.iter().enumerate() {
+        let y = inner.top() + inner.height() * stop_t;
+        mesh.vertices.push(Vertex {
+            pos: Pos2::new(inner.left(), y),
+            uv: Pos2::ZERO,
+            color: col,
+        });
+        mesh.vertices.push(Vertex {
+            pos: Pos2::new(inner.right(), y),
+            uv: Pos2::ZERO,
+            color: col,
+        });
+        if idx + 1 < n {
+            let base = (idx * 2) as u32;
+            mesh.indices
+                .extend_from_slice(&[base, base + 1, base + 2, base + 1, base + 3, base + 2]);
+        }
+    }
+    painter.add(egui::Shape::mesh(mesh));
+    painter.rect_stroke(
+        track_rect,
+        r,
+        Stroke::new(1.0_f32, theme.outline),
+        egui::StrokeKind::Outside,
+    );
+
+    let thumb_y = track_rect.top() + track_rect.height() * *color_pos;
+    let base_x = track_rect.center().x;
+    let active = resp.dragged() || resp.is_pointer_button_down_on();
+    let pop_t = ui
+        .ctx()
+        .animate_bool_with_time(ui.make_persistent_id("m3_vcolor_droplet"), active, 0.14);
+
+    let pop_right = base_x + 34.0 <= screen_rect.max.x;
+    let dir = if pop_right { 1.0 } else { -1.0 };
+    let drop_offset = 17.5 * pop_t * dir;
+    let drop_r = 6.0 + 6.5 * pop_t;
+    let drop_center = Pos2::new(base_x + drop_offset, thumb_y);
+    let tip = Pos2::new(base_x + 1.0 * dir, thumb_y);
+    draw_teardrop(&painter, drop_center, drop_r, tip, current, theme.surface);
+
+    if pop_t > 0.05 {
+        let half_w = (track_w * 0.5 + 2.5) * pop_t;
+        let bar = Rect::from_center_size(Pos2::new(base_x, thumb_y), Vec2::new(half_w * 2.0, 2.4));
+        painter.rect_filled(bar, 1.2, Color32::WHITE);
+    }
+
+    resp.on_hover_text("Color");
+    current
+}
+
+/// Vertical Material 3 Size Slider (1.5x taller; compact teardrop pops outward with pixel number).
+pub fn m3_size_slider_vertical(
+    ui: &mut Ui,
+    height: f32,
+    value: &mut f32,
+    min: f32,
+    max: f32,
+    theme: &ThemeColors,
+) {
+    let total_size = Vec2::new(32.0, height.max(90.0));
+    let (rect, _) = ui.allocate_exact_size(total_size, Sense::hover());
+    let track_w = 8.0;
+    let track_center = Pos2::new(rect.right() - 8.5, rect.center().y);
+    let track_rect = Rect::from_center_size(track_center, Vec2::new(track_w, total_size.y - 14.0));
+
+    let presets_x = rect.left() + 6.5;
+    for (idx, &sz) in SIZE_PRESETS.iter().enumerate() {
+        let pt = ((sz - min) / (max - min)).clamp(0.0, 1.0);
+        let py = track_rect.bottom() - track_rect.height() * pt;
+        let dot_center = Pos2::new(presets_x, py);
+        let hit_rect = Rect::from_center_size(dot_center, Vec2::splat(13.0));
+        let preset_resp = ui.interact(
+            hit_rect,
+            ui.make_persistent_id(("m3_vsize_preset", idx)),
+            Sense::click(),
+        );
+        if preset_resp.clicked() {
+            *value = sz.clamp(min, max);
+        }
+        let selected = (*value - sz).abs() < 0.6;
+        let base_r = 2.2 + 2.6 * pt;
+        let dot_scale = spring_scale(
+            ui.ctx(),
+            preset_resp.id,
+            preset_resp.hovered(),
+            preset_resp.is_pointer_button_down_on(),
+        );
+        let r = (if selected { base_r + 0.6 } else { base_r }) * dot_scale;
+        let fill = if selected {
+            theme.accent
+        } else if preset_resp.hovered() {
+            theme.on_surface
+        } else {
+            Color32::from_rgba_unmultiplied(theme.on_surface.r(), theme.on_surface.g(), theme.on_surface.b(), 150)
+        };
+        ui.painter().circle_filled(dot_center, r, fill);
+        ui.painter().circle_stroke(
+            dot_center,
+            r,
+            Stroke::new(
+                if selected { 1.3_f32 } else { 0.8_f32 },
+                if selected { Color32::WHITE } else { theme.outline },
+            ),
+        );
+        preset_resp.on_hover_text(format!("{} px", sz as u32));
+    }
+
+    let slider_hit = Rect::from_min_max(
+        Pos2::new(rect.left() + 12.0, rect.top()),
+        rect.max,
+    );
+    let resp = ui.interact(
+        slider_hit,
+        ui.make_persistent_id("m3_vsize_track_interact"),
+        Sense::click_and_drag(),
+    );
+
+    if resp.dragged() || resp.clicked() {
+        if let Some(pos) = resp.interact_pointer_pos() {
+            let t = ((track_rect.bottom() - pos.y) / track_rect.height()).clamp(0.0, 1.0);
+            *value = min + t * (max - min);
+        }
+    }
+
+    let t = ((*value - min) / (max - min)).clamp(0.0, 1.0);
+    let screen_rect = ui.ctx().screen_rect();
+    let painter = ui.painter().with_clip_rect(screen_rect);
+
+    painter.rect_filled(track_rect, track_w * 0.5, theme.surface_container_high);
+    let fill_h = (track_rect.height() * t).max(track_w);
+    let fill_rect = Rect::from_min_max(
+        Pos2::new(track_rect.left(), track_rect.bottom() - fill_h),
+        track_rect.max,
+    );
+    painter.rect_filled(fill_rect, track_w * 0.5, theme.accent);
+
+    let thumb_y = track_rect.bottom() - track_rect.height() * t;
+    let base_x = track_rect.center().x;
+    let active = resp.dragged() || resp.is_pointer_button_down_on();
+    let pop_t = ui
+        .ctx()
+        .animate_bool_with_time(ui.make_persistent_id("m3_vsize_droplet"), active, 0.14);
+
+    let pop_right = base_x + 34.0 <= screen_rect.max.x;
+    let dir = if pop_right { 1.0 } else { -1.0 };
+    let drop_offset = 17.5 * pop_t * dir;
+    let drop_r = 6.0 + 7.2 * pop_t;
+    let drop_center = Pos2::new(base_x + drop_offset, thumb_y);
+    let tip = Pos2::new(base_x + 1.0 * dir, thumb_y);
+    draw_teardrop(&painter, drop_center, drop_r, tip, theme.accent, theme.surface);
+
+    if pop_t > 0.05 {
+        let half_w = (track_w * 0.5 + 2.5) * pop_t;
+        let bar = Rect::from_center_size(Pos2::new(base_x, thumb_y), Vec2::new(half_w * 2.0, 2.4));
+        painter.rect_filled(bar, 1.2, Color32::WHITE);
+    }
+
+    if pop_t > 0.3 {
+        painter.text(
+            drop_center,
+            egui::Align2::CENTER_CENTER,
+            format!("{:.0}", *value),
+            egui::FontId::proportional(11.0),
+            theme.on_accent,
+        );
+    }
+
+    resp.on_hover_text(format!("Size: {:.0} px", *value));
+}
