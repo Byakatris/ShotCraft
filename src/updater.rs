@@ -1,7 +1,9 @@
 use std::fs;
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
 pub const RELEASES_API_URL: &str =

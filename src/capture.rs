@@ -117,7 +117,7 @@ fn cursor_position() -> Option<(i32, i32)> {
         if std::env::var("XDG_SESSION_TYPE").ok().as_deref() == Some("wayland") {
             return None;
         }
-        use gtk::gdk::prelude::DeviceExt;
+        use gtk::gdk::prelude::{DeviceExt, SeatExt};
         let display = gtk::gdk::Display::default()?;
         let seat = display.default_seat()?;
         let pointer = seat.pointer()?;

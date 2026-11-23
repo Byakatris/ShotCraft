@@ -140,24 +140,24 @@ jobs:
             TAG="v${APP_VERSION}"
           fi
 
-          cat > RELEASE_NOTES.md <<NOTES
-## ShotCraft ${TAG}
-
-Ultra-fast, lightweight (~1–3 MB) cross-platform screenshot & annotation app written in Rust.
-
-### Direct Downloads
-- **macOS (Apple Silicon):** \`ShotCraft-v${SHORT_VER}.dmg\`
-- **Windows (x64 Installer):** \`ShotCraft-v${SHORT_VER}-Setup.exe\`
-- **Linux (Ubuntu / Debian):** \`ShotCraft-v${SHORT_VER}-linux-amd64.deb\`
-- **Linux (Universal x86_64):** \`ShotCraft-v${SHORT_VER}-linux-x86_64.tar.gz\`
-
-### Highlights
-- Built-in **Auto-Updater** (menu bar tray & Settings -> Check / Update now)
-- **50-step Undo/Redo**, 2-pass Gaussian **Blur** & **Pixelate**, vector **Step** numbering, **Screen Draw**
-- Native HiDPI & mixed-DPI multi-monitor coordinates across macOS, Windows, and Linux
-- Rotating \`shotcraft.log\` diagnostics & non-blocking OS notifications
-- 10 UI languages (`En, Uk, Es, Fr, De, Pl, It, Pt, Tr, Nl`)
-NOTES
+          printf '%s\n' \
+            "## ShotCraft ${TAG}" \
+            "" \
+            "Ultra-fast, lightweight (~1-3 MB) cross-platform screenshot & annotation app written in Rust." \
+            "" \
+            "### Direct Downloads" \
+            "- **macOS (Apple Silicon):** \`ShotCraft-v${SHORT_VER}.dmg\`" \
+            "- **Windows (x64 Installer):** \`ShotCraft-v${SHORT_VER}-Setup.exe\`" \
+            "- **Linux (Ubuntu / Debian):** \`ShotCraft-v${SHORT_VER}-linux-amd64.deb\`" \
+            "- **Linux (Universal x86_64):** \`ShotCraft-v${SHORT_VER}-linux-x86_64.tar.gz\`" \
+            "" \
+            "### Highlights" \
+            "- Built-in **Auto-Updater** (menu bar tray & Settings -> Check / Update now)" \
+            "- **50-step Undo/Redo**, 2-pass Gaussian **Blur** & **Pixelate**, vector **Step** numbering, **Screen Draw**" \
+            "- Native HiDPI & mixed-DPI multi-monitor coordinates across macOS, Windows, and Linux" \
+            "- Rotating \`shotcraft.log\` diagnostics & non-blocking OS notifications" \
+            "- 10 UI languages (\`En, Uk, Es, Fr, De, Pl, It, Pt, Tr, Nl\`)" \
+            > RELEASE_NOTES.md
 
           if gh release view "${TAG}" >/dev/null 2>&1; then
             gh release edit "${TAG}" --title "ShotCraft ${TAG}" --notes-file RELEASE_NOTES.md
