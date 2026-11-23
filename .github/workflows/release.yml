@@ -67,6 +67,47 @@ jobs:
           name: dist-windows
           path: dist/ShotCraft-v*-Setup.exe
 
+  build-windows-arm64:
+    runs-on: windows-11-arm
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable (ARM64 MSVC)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-pc-windows-msvc
+
+      - name: Run unit tests (ARM64)
+        env:
+          RUSTFLAGS: "-D warnings"
+        run: cargo test --target aarch64-pc-windows-msvc
+
+      - name: Install NSIS
+        shell: bash
+        run: |
+          if ! command -v makensis >/dev/null 2>&1 && [ ! -x "/c/Program Files (x86)/NSIS/makensis.exe" ]; then
+            if command -v choco >/dev/null 2>&1; then
+              choco install nsis -y --no-progress
+            else
+              winget install --id NSIS.NSIS -e --silent --accept-package-agreements --accept-source-agreements
+            fi
+          fi
+
+      - name: Build & Package Windows ARM64 NSIS (.exe)
+        shell: bash
+        run: |
+          export PATH="/c/Program Files (x86)/NSIS:/c/Program Files/NSIS:/c/ProgramData/chocolatey/bin:${PATH}"
+          chmod +x package_windows.sh
+          WIN_ARCH=arm64 ./package_windows.sh
+          powershell -NoProfile -Command '$b=[IO.File]::ReadAllBytes("target/aarch64-pc-windows-msvc/release/shotcraft.exe"); $pe=[BitConverter]::ToInt32($b,0x3c); $m=[BitConverter]::ToUInt16($b,$pe+4); Write-Host ("PE Machine: 0x{0:X4}" -f $m); if($m -ne 0xAA64){ exit 1 }'
+
+      - name: Upload Windows ARM64 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-windows-arm64
+          path: dist/ShotCraft-v*-arm64-Setup.exe
+
   build-linux:
     runs-on: ubuntu-24.04
     steps:
@@ -121,7 +162,7 @@ jobs:
             dist/ShotCraft-v*-linux-x86_64.tar.gz
 
   publish-release:
-    needs: [build-macos, build-windows, build-linux]
+    needs: [build-macos, build-windows, build-windows-arm64, build-linux]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -152,6 +193,7 @@ jobs:
             "### Direct Downloads" \
             "- **macOS (Apple Silicon):** \`ShotCraft-v${SHORT_VER}.dmg\`" \
             "- **Windows (x64 Installer):** \`ShotCraft-v${SHORT_VER}-Setup.exe\`" \
+            "- **Windows (ARM64 Installer):** \`ShotCraft-v${SHORT_VER}-arm64-Setup.exe\`" \
             "- **Linux (Ubuntu / Debian):** \`ShotCraft-v${SHORT_VER}-linux-amd64.deb\`" \
             "- **Linux (Universal x86_64):** \`ShotCraft-v${SHORT_VER}-linux-x86_64.tar.gz\`" \
             "" \

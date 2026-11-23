@@ -10,7 +10,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, windows-latest, ubuntu-24.04]
+        os: [macos-latest, windows-latest, windows-11-arm, ubuntu-24.04]
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
@@ -18,6 +18,8 @@ jobs:
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.os == 'windows-11-arm' && 'aarch64-pc-windows-msvc' || '' }}
 
       - name: Install Linux GUI & capture dependencies
         if: matrix.os == 'ubuntu-24.04'
@@ -47,15 +49,35 @@ jobs:
       - name: Check all targets
         env:
           RUSTFLAGS: "-D warnings"
-        run: cargo check --all-targets
+        run: |
+          if [ "${{ matrix.os }}" = "windows-11-arm" ]; then
+            cargo check --all-targets --target aarch64-pc-windows-msvc
+          else
+            cargo check --all-targets
+          fi
+        shell: bash
 
       - name: Run unit tests
         env:
           RUSTFLAGS: "-D warnings"
-        run: cargo test
+        run: |
+          if [ "${{ matrix.os }}" = "windows-11-arm" ]; then
+            cargo test --target aarch64-pc-windows-msvc
+          else
+            cargo test
+          fi
+        shell: bash
 
-      - name: Smoke-test binary (macOS & Windows)
-        if: matrix.os != 'ubuntu-24.04'
+      - name: Smoke-test binary (Windows ARM64)
+        if: matrix.os == 'windows-11-arm'
+        env:
+          RUSTFLAGS: "-D warnings"
+        run: |
+          cargo run --target aarch64-pc-windows-msvc -- --version
+          cargo run --target aarch64-pc-windows-msvc -- --smoke-test
+
+      - name: Smoke-test binary (macOS & Windows x64)
+        if: matrix.os == 'macos-latest' || matrix.os == 'windows-latest'
         env:
           RUSTFLAGS: "-D warnings"
         run: |

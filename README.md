@@ -21,7 +21,8 @@ Pick your platform for a direct 1-click installer (or view [all releases](https:
 | Platform | Direct Installer | Architecture |
 | :--- | :--- | :--- |
 | **macOS** | [**Download `ShotCraft-v0.6.dmg`**](https://github.com/Byakatris/ShotCraft/releases/download/v0.6.0/ShotCraft-v0.6.dmg) | Apple Silicon (`arm64`) |
-| **Windows** | [**Download `ShotCraft-v0.6-Setup.exe`**](https://github.com/Byakatris/ShotCraft/releases/download/v0.6.0/ShotCraft-v0.6-Setup.exe) | Windows 10/11 (`x64`) |
+| **Windows (x64)** | [**Download `ShotCraft-v0.6-Setup.exe`**](https://github.com/Byakatris/ShotCraft/releases/download/v0.6.0/ShotCraft-v0.6-Setup.exe) | Windows 10/11 (`x64`) |
+| **Windows (ARM64)** | [**Download `ShotCraft-v0.6-arm64-Setup.exe`**](https://github.com/Byakatris/ShotCraft/releases/download/v0.6.0/ShotCraft-v0.6-arm64-Setup.exe) | Windows 11 (`arm64`) |
 | **Linux (Debian / Ubuntu)** | [**Download `ShotCraft-v0.6-linux-amd64.deb`**](https://github.com/Byakatris/ShotCraft/releases/download/v0.6.0/ShotCraft-v0.6-linux-amd64.deb) | Ubuntu / Debian (`amd64`) |
 | **Linux (Universal)** | [**Download `ShotCraft-v0.6-linux-x86_64.tar.gz`**](https://github.com/Byakatris/ShotCraft/releases/download/v0.6.0/ShotCraft-v0.6-linux-x86_64.tar.gz) | Any x86_64 distro |
 
@@ -89,9 +90,10 @@ cargo run -- --version
 cargo run -- --smoke-test
 
 # Build & package per platform
-./package_dmg.sh      # macOS (.dmg)
-./package_windows.sh  # Windows NSIS (.exe) — native on Windows or cross-compiled via mingw
-./package_linux.sh    # Linux (.deb & .tar.gz)
+./package_dmg.sh                    # macOS (.dmg)
+./package_windows.sh                # Windows x64 NSIS (.exe) — native on Windows or cross-compiled via mingw
+WIN_ARCH=arm64 ./package_windows.sh # Windows ARM64 NSIS (.exe) — native on Windows ARM64
+./package_linux.sh                  # Linux (.deb & .tar.gz)
 ```
 
 </details>

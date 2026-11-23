@@ -8,16 +8,39 @@ APP_VERSION="$(grep -m1 '^version' Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')"
 APP_SHORT_VER="$(echo "${APP_VERSION}" | awk -F. '{print $1"."$2}')"
 DIST_DIR="$(pwd)/dist"
 STAGE_DIR="${DIST_DIR}/win_stage"
-INSTALLER_NAME="${APP_NAME}-v${APP_SHORT_VER}-Setup.exe"
+
+WIN_ARCH="${WIN_ARCH:-}"
+if [ -z "${WIN_ARCH}" ]; then
+  ARCH_HINT="${PROCESSOR_ARCHITEW6432:-${PROCESSOR_ARCHITECTURE:-$(uname -m || echo x86_64)}}"
+  case "${ARCH_HINT}" in
+    *ARM64*|*arm64*|*aarch64*) WIN_ARCH="arm64" ;;
+    *) WIN_ARCH="x64" ;;
+  esac
+fi
+
+if [ "${WIN_ARCH}" = "arm64" ]; then
+  INSTALLER_NAME="${APP_NAME}-v${APP_SHORT_VER}-arm64-Setup.exe"
+else
+  INSTALLER_NAME="${APP_NAME}-v${APP_SHORT_VER}-Setup.exe"
+fi
 INSTALLER_PATH="${DIST_DIR}/${INSTALLER_NAME}"
 
 UNAME_S="$(uname -s || echo Unknown)"
 case "${UNAME_S}" in
   MINGW*|MSYS*|CYGWIN*)
-    echo "==> Building Windows x86_64 release binary natively (v${APP_VERSION})..."
-    RUSTFLAGS="-D warnings" cargo build --release
-    BIN_PATH="target/release/shotcraft.exe"
-    "${BIN_PATH}" --smoke-test
+    if [ "${WIN_ARCH}" = "arm64" ]; then
+      echo "==> Building Windows ARM64 release binary natively (v${APP_VERSION})..."
+      RUSTFLAGS="-D warnings" cargo build --release --target aarch64-pc-windows-msvc
+      BIN_PATH="target/aarch64-pc-windows-msvc/release/shotcraft.exe"
+      "${BIN_PATH}" --version
+      "${BIN_PATH}" --smoke-test
+    else
+      echo "==> Building Windows x86_64 release binary natively (v${APP_VERSION})..."
+      RUSTFLAGS="-D warnings" cargo build --release
+      BIN_PATH="target/release/shotcraft.exe"
+      "${BIN_PATH}" --version
+      "${BIN_PATH}" --smoke-test
+    fi
     ;;
   *)
     echo "==> Cross-compiling Windows x86_64 release binary (v${APP_VERSION})..."
@@ -166,6 +189,9 @@ SectionEnd
 NSI
 
 MAKENSIS_BIN="$(command -v makensis || true)"
+if [ -z "${MAKENSIS_BIN}" ] && [ -x "/c/ProgramData/chocolatey/bin/makensis.exe" ]; then
+  MAKENSIS_BIN="/c/ProgramData/chocolatey/bin/makensis.exe"
+fi
 if [ -z "${MAKENSIS_BIN}" ] && [ -x "/c/Program Files (x86)/NSIS/makensis.exe" ]; then
   MAKENSIS_BIN="/c/Program Files (x86)/NSIS/makensis.exe"
 fi

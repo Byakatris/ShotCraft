@@ -48,7 +48,8 @@ pub enum InstallAction {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlatformTarget {
     MacOs,
-    Windows,
+    WindowsX64,
+    WindowsArm64,
     LinuxDeb,
     LinuxTarGz,
 }
@@ -59,9 +60,13 @@ pub fn current_platform_target() -> PlatformTarget {
     {
         PlatformTarget::MacOs
     }
-    #[cfg(target_os = "windows")]
+    #[cfg(all(target_os = "windows", target_arch = "aarch64"))]
     {
-        PlatformTarget::Windows
+        PlatformTarget::WindowsArm64
+    }
+    #[cfg(all(target_os = "windows", not(target_arch = "aarch64")))]
+    {
+        PlatformTarget::WindowsX64
     }
     #[cfg(target_os = "linux")]
     {
@@ -388,7 +393,26 @@ fn select_asset<'a>(assets: &'a [ParsedAsset<'a>], target: PlatformTarget) -> Op
 
     match target {
         PlatformTarget::MacOs => find_suffix(".dmg"),
-        PlatformTarget::Windows => find_suffix("-setup.exe").or_else(|| find_suffix(".exe")),
+        PlatformTarget::WindowsArm64 => find_suffix("-arm64-setup.exe")
+            .or_else(|| {
+                assets.iter().find(|a| {
+                    let n = a.name.to_ascii_lowercase();
+                    n.ends_with(".exe") && n.contains("arm64")
+                })
+            })
+            .or_else(|| find_suffix("-setup.exe")),
+        PlatformTarget::WindowsX64 => assets
+            .iter()
+            .find(|a| {
+                let n = a.name.to_ascii_lowercase();
+                n.ends_with("-setup.exe") && !n.contains("arm64")
+            })
+            .or_else(|| {
+                assets.iter().find(|a| {
+                    let n = a.name.to_ascii_lowercase();
+                    n.ends_with(".exe") && !n.contains("arm64")
+                })
+            }),
         PlatformTarget::LinuxDeb => find_suffix(".deb").or_else(|| find_suffix(".tar.gz")),
         PlatformTarget::LinuxTarGz => find_suffix(".tar.gz").or_else(|| find_suffix(".deb")),
     }
@@ -891,6 +915,11 @@ mod tests {
       "browser_download_url": "https://github.com/Byakatris/ShotCraft/releases/download/v0.7.1/ShotCraft-v0.7-Setup.exe"
     },
     {
+      "name": "ShotCraft-v0.7-arm64-Setup.exe",
+      "size": 1310400,
+      "browser_download_url": "https://github.com/Byakatris/ShotCraft/releases/download/v0.7.1/ShotCraft-v0.7-arm64-Setup.exe"
+    },
+    {
       "name": "ShotCraft-v0.7-linux-amd64.deb",
       "size": 2410000,
       "browser_download_url": "https://github.com/Byakatris/ShotCraft/releases/download/v0.7.1/ShotCraft-v0.7-linux-amd64.deb"
@@ -948,8 +977,13 @@ mod tests {
         assert_eq!(mac.asset_name, "ShotCraft-v0.7.dmg");
         assert_eq!(mac.asset_size, Some(3012450));
 
-        let win = parse_github_release_json(SAMPLE_RELEASE_JSON, PlatformTarget::Windows).unwrap();
+        let win =
+            parse_github_release_json(SAMPLE_RELEASE_JSON, PlatformTarget::WindowsX64).unwrap();
         assert_eq!(win.asset_name, "ShotCraft-v0.7-Setup.exe");
+
+        let win_arm =
+            parse_github_release_json(SAMPLE_RELEASE_JSON, PlatformTarget::WindowsArm64).unwrap();
+        assert_eq!(win_arm.asset_name, "ShotCraft-v0.7-arm64-Setup.exe");
 
         let deb =
             parse_github_release_json(SAMPLE_RELEASE_JSON, PlatformTarget::LinuxDeb).unwrap();
