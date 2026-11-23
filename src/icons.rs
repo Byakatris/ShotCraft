@@ -144,8 +144,32 @@ pub fn draw_step_icon(p: &egui::Painter, r: Rect, c: Color32) {
     );
 }
 
-/// Google Material `blur_on` style tapered dot grid.
-pub fn draw_blur_icon(p: &egui::Painter, r: Rect, c: Color32) {
+/// Google Material `blur_on` style tapered dot grid, or mosaic grid when `pixelate` is true.
+pub fn draw_blur_icon(p: &egui::Painter, r: Rect, c: Color32, pixelate: bool) {
+    if pixelate {
+        let cell = r.width().min(r.height()) * 0.25;
+        let gap = cell * 0.16;
+        let cx = r.center().x;
+        let cy = r.center().y;
+        let sz = Vec2::splat((cell - gap).max(2.0));
+        for dy in [-1.0_f32, 0.0, 1.0] {
+            for dx in [-1.0_f32, 0.0, 1.0] {
+                let alpha = if ((dx + dy).abs() as i32) % 2 == 0 {
+                    240
+                } else {
+                    135
+                };
+                let center = Pos2::new(cx + dx * cell, cy + dy * cell);
+                p.rect_filled(
+                    Rect::from_center_size(center, sz),
+                    1.0,
+                    Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), alpha),
+                );
+            }
+        }
+        return;
+    }
+
     let step = r.width().min(r.height()) * 0.27;
     let cx = r.center().x;
     let cy = r.center().y;
@@ -198,6 +222,33 @@ pub fn draw_undo_icon(p: &egui::Painter, r: Rect, c: Color32) {
     );
     p.line_segment(
         [Pos2::new(left_x, top_y), Pos2::new(left_x + 4.5, top_y + 4.0)],
+        Stroke::new(2.0_f32, c),
+    );
+}
+
+/// Smooth Material `redo` curved arrow (mirrored undo).
+pub fn draw_redo_icon(p: &egui::Painter, r: Rect, c: Color32) {
+    let cx = r.center().x - 1.0;
+    let top_y = r.top() + r.height() * 0.32;
+    let bot_y = r.bottom() - r.height() * 0.26;
+    let left_x = r.left() + r.width() * 0.18;
+    let right_x = r.right() - r.width() * 0.18;
+
+    let arc = vec![
+        Pos2::new(right_x, top_y),
+        Pos2::new(cx - 2.0, top_y),
+        Pos2::new(left_x, top_y + 3.0),
+        Pos2::new(left_x, (top_y + bot_y) * 0.5 + 1.0),
+        Pos2::new(cx - 2.0, bot_y),
+        Pos2::new(cx + 3.0, bot_y),
+    ];
+    p.add(egui::Shape::line(arc, Stroke::new(2.0_f32, c)));
+    p.line_segment(
+        [Pos2::new(right_x, top_y), Pos2::new(right_x - 4.5, top_y - 4.0)],
+        Stroke::new(2.0_f32, c),
+    );
+    p.line_segment(
+        [Pos2::new(right_x, top_y), Pos2::new(right_x - 4.5, top_y + 4.0)],
         Stroke::new(2.0_f32, c),
     );
 }

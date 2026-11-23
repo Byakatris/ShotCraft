@@ -4,6 +4,9 @@ use std::path::PathBuf;
 use global_hotkey::hotkey::{Code, HotKey, Modifiers};
 use muda::accelerator::{Accelerator, Code as MudaCode, Modifiers as MudaModifiers};
 
+use crate::annotations::Tool;
+use crate::diagnostics;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Language {
     En,
@@ -16,15 +19,10 @@ pub enum Language {
     Pt,
     Tr,
     Nl,
-    Zh,
-    Ja,
-    Ko,
-    Ar,
-    Hi,
 }
 
 impl Language {
-    pub const ALL: [Self; 15] = [
+    pub const ALL: [Self; 10] = [
         Self::En,
         Self::Uk,
         Self::Es,
@@ -35,11 +33,6 @@ impl Language {
         Self::Pt,
         Self::Tr,
         Self::Nl,
-        Self::Zh,
-        Self::Ja,
-        Self::Ko,
-        Self::Ar,
-        Self::Hi,
     ];
 
     pub fn code(self) -> &'static str {
@@ -54,11 +47,6 @@ impl Language {
             Self::Pt => "pt",
             Self::Tr => "tr",
             Self::Nl => "nl",
-            Self::Zh => "zh",
-            Self::Ja => "ja",
-            Self::Ko => "ko",
-            Self::Ar => "ar",
-            Self::Hi => "hi",
         }
     }
 
@@ -81,11 +69,6 @@ impl Language {
             Self::Pt => "Português",
             Self::Tr => "Türkçe",
             Self::Nl => "Nederlands",
-            Self::Zh => "Chinese (ZH)",
-            Self::Ja => "Japanese (JA)",
-            Self::Ko => "Korean (KO)",
-            Self::Ar => "Arabic (AR)",
-            Self::Hi => "Hindi (HI)",
         }
     }
 }
@@ -102,6 +85,14 @@ pub struct Strings {
     pub hint_window: &'static str,
     pub settings_title: &'static str,
     pub settings_lang: &'static str,
+    pub settings_text_font: &'static str,
+    pub settings_toolbar_layout: &'static str,
+    pub layout_horizontal: &'static str,
+    pub layout_vertical: &'static str,
+    pub settings_bg_color: &'static str,
+    pub settings_accent_color: &'static str,
+    pub settings_shift_angle: &'static str,
+    pub settings_angle_hint: &'static str,
     pub settings_folder: &'static str,
     pub settings_choose: &'static str,
     pub settings_desktop: &'static str,
@@ -111,9 +102,56 @@ pub struct Strings {
     pub hk_window: &'static str,
     pub hk_live_draw: &'static str,
     pub hk_press: &'static str,
+    pub hotkey_conflict: &'static str,
+    pub hotkey_need_modifier: &'static str,
+    pub tool_move: &'static str,
+    pub tool_pen: &'static str,
+    pub tool_marker: &'static str,
+    pub tool_line: &'static str,
+    pub tool_arrow: &'static str,
+    pub tool_text: &'static str,
+    pub tool_ellipse: &'static str,
+    pub tool_rect: &'static str,
+    pub tool_step: &'static str,
+    pub tool_blur: &'static str,
+    pub act_undo: &'static str,
+    pub act_redo: &'static str,
+    pub act_copy: &'static str,
+    pub act_save: &'static str,
+    pub act_close: &'static str,
+    pub slider_color: &'static str,
+    pub slider_size: &'static str,
+    pub err_save_failed: &'static str,
+    pub err_copy_failed: &'static str,
+    pub err_capture_failed: &'static str,
+    pub menu_check_updates: &'static str,
+    pub menu_update_available: &'static str,
+    pub settings_updates: &'static str,
+    pub update_check: &'static str,
+    pub update_checking: &'static str,
+    pub update_up_to_date: &'static str,
+    pub update_available: &'static str,
+    pub update_install: &'static str,
+    pub update_downloading: &'static str,
+    pub update_opened: &'static str,
+    pub update_failed: &'static str,
+    pub settings_open_log: &'static str,
+    pub wayland_hotkeys_note: &'static str,
 }
 
 impl Strings {
+    pub fn primary_mod_label() -> &'static str {
+        if cfg!(target_os = "macos") {
+            "Cmd"
+        } else {
+            "Ctrl"
+        }
+    }
+
+    pub fn with_mod(template: &str) -> String {
+        template.replace("{MOD}", Self::primary_mod_label())
+    }
+
     pub fn for_lang(lang: Language) -> Self {
         match lang {
             Language::Uk => Self {
@@ -128,6 +166,14 @@ impl Strings {
                 hint_window: "Наведіть на вікно та клікніть  •  Esc — скасувати",
                 settings_title: "Налаштування ShotCraft",
                 settings_lang: "Мова",
+                settings_text_font: "Шрифт (інструмент Текст)",
+                settings_toolbar_layout: "Панель інструментів",
+                layout_horizontal: "Горизонт.",
+                layout_vertical: "Вертик.",
+                settings_bg_color: "Колір фону",
+                settings_accent_color: "Колір акценту",
+                settings_shift_angle: "Кут Shift (1–90°)",
+                settings_angle_hint: "Клікніть щоб ввести (1–90) або потягніть вліво/вправо",
                 settings_folder: "Тека збереження скріншотів",
                 settings_choose: "Обрати теку...",
                 settings_desktop: "Робочий стіл",
@@ -137,6 +183,41 @@ impl Strings {
                 hk_window: "Вікно",
                 hk_live_draw: "Поверх екрану",
                 hk_press: "Натисніть клавіші...",
+                hotkey_conflict: "Конфлікт комбінації клавіш",
+                hotkey_need_modifier: "Додайте модифікатор (Ctrl/Alt/Shift)",
+                tool_move: "Переміщення / Розмір [1]",
+                tool_pen: "Олівець [2]",
+                tool_marker: "Маркер [3]",
+                tool_line: "Лінія [4] (Shift — крок кута)",
+                tool_arrow: "Стрілка [5] (Shift — крок кута)",
+                tool_text: "Текст / Виноска [6]",
+                tool_ellipse: "Еліпс [7] ({MOD} — заливка, Shift — коло)",
+                tool_rect: "Прямокутник [8] ({MOD} — заливка, Shift — квадрат)",
+                tool_step: "Нумерація кроків [9]",
+                tool_blur: "Розмиття [0] ({MOD} — пікселізація)",
+                act_undo: "Скасувати ({MOD}+Z)",
+                act_redo: "Повернути ({MOD}+Shift+Z)",
+                act_copy: "Копіювати ({MOD}+C / Enter)",
+                act_save: "Зберегти ({MOD}+S)",
+                act_close: "Закрити (Esc)",
+                slider_color: "Колір",
+                slider_size: "Товщина",
+                err_save_failed: "Не вдалося зберегти скріншот",
+                err_copy_failed: "Не вдалося скопіювати в буфер",
+                err_capture_failed: "Помилка захоплення екрана",
+                menu_check_updates: "Перевірити оновлення...",
+                menu_update_available: "Встановити оновлення",
+                settings_updates: "Оновлення",
+                update_check: "Перевірити",
+                update_checking: "Перевірка...",
+                update_up_to_date: "Актуальна версія",
+                update_available: "Доступно",
+                update_install: "Оновити",
+                update_downloading: "Завантаження...",
+                update_opened: "Інсталятор відкрито",
+                update_failed: "Помилка перевірки",
+                settings_open_log: "Лог",
+                wayland_hotkeys_note: "Wayland: користуйтесь меню в треї, якщо гарячі клавіші заблоковані",
             },
             Language::Es => Self {
                 menu_full: "Pantalla completa",
@@ -150,6 +231,14 @@ impl Strings {
                 hint_window: "Pasa sobre una ventana y haz clic  •  Esc para cancelar",
                 settings_title: "Ajustes de ShotCraft",
                 settings_lang: "Idioma",
+                settings_text_font: "Fuente de texto",
+                settings_toolbar_layout: "Barra de herramientas",
+                layout_horizontal: "Horizontal",
+                layout_vertical: "Vertical",
+                settings_bg_color: "Color de fondo",
+                settings_accent_color: "Color de acento",
+                settings_shift_angle: "Ángulo Shift (1–90°)",
+                settings_angle_hint: "Haz clic para escribir (1–90) o arrastra izq./der.",
                 settings_folder: "Carpeta de capturas",
                 settings_choose: "Elegir carpeta...",
                 settings_desktop: "Escritorio",
@@ -159,6 +248,41 @@ impl Strings {
                 hk_window: "Capturar ventana",
                 hk_live_draw: "Dibujar en pantalla",
                 hk_press: "Pulsa teclas...",
+                hotkey_conflict: "El atajo ya está asignado",
+                hotkey_need_modifier: "Usa al menos una tecla modificadora",
+                tool_move: "Mover / Redimensionar [1]",
+                tool_pen: "Lápiz [2]",
+                tool_marker: "Resaltador [3]",
+                tool_line: "Línea [4] (Shift — ajustar ángulo)",
+                tool_arrow: "Flecha [5] (Shift — ajustar ángulo)",
+                tool_text: "Texto / Llamada [6]",
+                tool_ellipse: "Elipse [7] ({MOD} — relleno, Shift — círculo)",
+                tool_rect: "Rectángulo [8] ({MOD} — relleno, Shift — cuadrado)",
+                tool_step: "Numeración [9]",
+                tool_blur: "Desenfoque [0] ({MOD} — pixelar)",
+                act_undo: "Deshacer ({MOD}+Z)",
+                act_redo: "Rehacer ({MOD}+Shift+Z)",
+                act_copy: "Copiar ({MOD}+C / Enter)",
+                act_save: "Guardar ({MOD}+S)",
+                act_close: "Cerrar (Esc)",
+                slider_color: "Color",
+                slider_size: "Tamaño",
+                err_save_failed: "Error al guardar la captura",
+                err_copy_failed: "Error al copiar al portapapeles",
+                err_capture_failed: "Error al capturar la pantalla",
+                menu_check_updates: "Buscar actualizaciones...",
+                menu_update_available: "Instalar actualización",
+                settings_updates: "Actualizaciones",
+                update_check: "Buscar",
+                update_checking: "Buscando...",
+                update_up_to_date: "Actualizado",
+                update_available: "Disponible",
+                update_install: "Actualizar",
+                update_downloading: "Descargando...",
+                update_opened: "Instalador abierto",
+                update_failed: "Error al buscar",
+                settings_open_log: "Registro",
+                wayland_hotkeys_note: "Wayland: usa el menú de la bandeja si los atajos globales fallan",
             },
             Language::Fr => Self {
                 menu_full: "Plein écran",
@@ -172,6 +296,14 @@ impl Strings {
                 hint_window: "Survolez une fenêtre et cliquez  •  Échap pour annuler",
                 settings_title: "Réglages ShotCraft",
                 settings_lang: "Langue",
+                settings_text_font: "Police du texte",
+                settings_toolbar_layout: "Barre d'outils",
+                layout_horizontal: "Horizontale",
+                layout_vertical: "Verticale",
+                settings_bg_color: "Couleur de fond",
+                settings_accent_color: "Couleur d'accent",
+                settings_shift_angle: "Pas d'angle Shift (1–90°)",
+                settings_angle_hint: "Cliquer pour saisir (1–90) ou glisser gauche/droite",
                 settings_folder: "Dossier d'enregistrement",
                 settings_choose: "Choisir...",
                 settings_desktop: "Bureau",
@@ -181,6 +313,41 @@ impl Strings {
                 hk_window: "Capturer une fenêtre",
                 hk_live_draw: "Dessiner à l'écran",
                 hk_press: "Appuyez...",
+                hotkey_conflict: "Raccourci déjà utilisé",
+                hotkey_need_modifier: "Ajoutez un modificateur (Ctrl/Alt/Shift)",
+                tool_move: "Déplacer / Taille [1]",
+                tool_pen: "Crayon [2]",
+                tool_marker: "Surligneur [3]",
+                tool_line: "Ligne [4] (Shift — aimanter l'angle)",
+                tool_arrow: "Flèche [5] (Shift — aimanter l'angle)",
+                tool_text: "Texte / Bulle [6]",
+                tool_ellipse: "Ellipse [7] ({MOD} — plein, Shift — cercle)",
+                tool_rect: "Rectangle [8] ({MOD} — plein, Shift — carré)",
+                tool_step: "Numérotation [9]",
+                tool_blur: "Flou [0] ({MOD} — pixeliser)",
+                act_undo: "Annuler ({MOD}+Z)",
+                act_redo: "Rétablir ({MOD}+Shift+Z)",
+                act_copy: "Copier ({MOD}+C / Entrée)",
+                act_save: "Enregistrer ({MOD}+S)",
+                act_close: "Fermer (Échap)",
+                slider_color: "Couleur",
+                slider_size: "Épaisseur",
+                err_save_failed: "Échec de l'enregistrement",
+                err_copy_failed: "Échec de la copie",
+                err_capture_failed: "Échec de la capture",
+                menu_check_updates: "Vérifier les mises à jour...",
+                menu_update_available: "Installer la mise à jour",
+                settings_updates: "Mises à jour",
+                update_check: "Vérifier",
+                update_checking: "Recherche...",
+                update_up_to_date: "À jour",
+                update_available: "Disponible",
+                update_install: "Mettre à jour",
+                update_downloading: "Téléchargement...",
+                update_opened: "Installateur ouvert",
+                update_failed: "Échec",
+                settings_open_log: "Journal",
+                wayland_hotkeys_note: "Wayland : utilisez le menu de la barre si les raccourcis sont bloqués",
             },
             Language::De => Self {
                 menu_full: "Vollbild",
@@ -194,6 +361,14 @@ impl Strings {
                 hint_window: "Fenster anvisieren & klicken  •  Esc zum Abbrechen",
                 settings_title: "ShotCraft Einstellungen",
                 settings_lang: "Sprache",
+                settings_text_font: "Textschriftart",
+                settings_toolbar_layout: "Werkzeugleiste",
+                layout_horizontal: "Horizontal",
+                layout_vertical: "Vertikal",
+                settings_bg_color: "Hintergrundfarbe",
+                settings_accent_color: "Akzentfarbe",
+                settings_shift_angle: "Shift-Winkel (1–90°)",
+                settings_angle_hint: "Klicken zum Eingeben (1–90) oder links/rechts ziehen",
                 settings_folder: "Speicherordner",
                 settings_choose: "Ordner wählen...",
                 settings_desktop: "Schreibtisch",
@@ -203,6 +378,41 @@ impl Strings {
                 hk_window: "Fenster aufnehmen",
                 hk_live_draw: "Auf Bildschirm zeichnen",
                 hk_press: "Taste drücken...",
+                hotkey_conflict: "Tastenkürzel bereits belegt",
+                hotkey_need_modifier: "Mindestens eine Zusatztaste wählen",
+                tool_move: "Verschieben / Größe [1]",
+                tool_pen: "Stift [2]",
+                tool_marker: "Textmarker [3]",
+                tool_line: "Linie [4] (Shift — Winkel einrasten)",
+                tool_arrow: "Pfeil [5] (Shift — Winkel einrasten)",
+                tool_text: "Text / Callout [6]",
+                tool_ellipse: "Ellipse [7] ({MOD} — gefüllt, Shift — Kreis)",
+                tool_rect: "Rechteck [8] ({MOD} — gefüllt, Shift — Quadrat)",
+                tool_step: "Nummerierung [9]",
+                tool_blur: "Weichzeichnen [0] ({MOD} — verpixeln)",
+                act_undo: "Rückgängig ({MOD}+Z)",
+                act_redo: "Wiederholen ({MOD}+Shift+Z)",
+                act_copy: "Kopieren ({MOD}+C / Enter)",
+                act_save: "Speichern ({MOD}+S)",
+                act_close: "Schließen (Esc)",
+                slider_color: "Farbe",
+                slider_size: "Stärke",
+                err_save_failed: "Speichern fehlgeschlagen",
+                err_copy_failed: "Kopieren fehlgeschlagen",
+                err_capture_failed: "Bildschirmaufnahme fehlgeschlagen",
+                menu_check_updates: "Nach Updates suchen...",
+                menu_update_available: "Update installieren",
+                settings_updates: "Updates",
+                update_check: "Prüfen",
+                update_checking: "Prüfe...",
+                update_up_to_date: "Aktuell",
+                update_available: "Verfügbar",
+                update_install: "Aktualisieren",
+                update_downloading: "Lade herunter...",
+                update_opened: "Installer geöffnet",
+                update_failed: "Prüfung fehlgeschlagen",
+                settings_open_log: "Log",
+                wayland_hotkeys_note: "Wayland: Nutzen Sie das Tray-Menü, falls globale Kürzel blockiert sind",
             },
             Language::Pl => Self {
                 menu_full: "Pełny ekran",
@@ -216,6 +426,14 @@ impl Strings {
                 hint_window: "Najedź na okno i kliknij  •  Esc — anuluj",
                 settings_title: "Ustawienia ShotCraft",
                 settings_lang: "Język",
+                settings_text_font: "Czcionka tekstu",
+                settings_toolbar_layout: "Pasek narzędzi",
+                layout_horizontal: "Poziomy",
+                layout_vertical: "Pionowy",
+                settings_bg_color: "Kolor tła",
+                settings_accent_color: "Kolor akcentu",
+                settings_shift_angle: "Kąt Shift (1–90°)",
+                settings_angle_hint: "Kliknij, aby wpisać (1–90) lub przeciągnij lewo/prawo",
                 settings_folder: "Folder zapisu zrzutów",
                 settings_choose: "Wybierz folder...",
                 settings_desktop: "Pulpit",
@@ -225,6 +443,41 @@ impl Strings {
                 hk_window: "Przechwyć okno",
                 hk_live_draw: "Rysuj na ekranie",
                 hk_press: "Naciśnij klawisze...",
+                hotkey_conflict: "Konflikt skrótu klawiszowego",
+                hotkey_need_modifier: "Wymagany klawisz modyfikujący",
+                tool_move: "Przesuń / Rozmiar [1]",
+                tool_pen: "Ołówek [2]",
+                tool_marker: "Zakreślacz [3]",
+                tool_line: "Linia [4] (Shift — przyciąganie kąta)",
+                tool_arrow: "Strzałka [5] (Shift — przyciąganie kąta)",
+                tool_text: "Tekst / Odnośnik [6]",
+                tool_ellipse: "Elipsa [7] ({MOD} — wypełnienie, Shift — koło)",
+                tool_rect: "Prostokąt [8] ({MOD} — wypełnienie, Shift — kwadrat)",
+                tool_step: "Numeracja [9]",
+                tool_blur: "Rozmycie [0] ({MOD} — pikselizacja)",
+                act_undo: "Cofnij ({MOD}+Z)",
+                act_redo: "Ponów ({MOD}+Shift+Z)",
+                act_copy: "Kopiuj ({MOD}+C / Enter)",
+                act_save: "Zapisz ({MOD}+S)",
+                act_close: "Zamknij (Esc)",
+                slider_color: "Kolor",
+                slider_size: "Grubość",
+                err_save_failed: "Nie udało się zapisać zrzutu",
+                err_copy_failed: "Nie udało się skopiować do schowka",
+                err_capture_failed: "Błąd przechwytywania ekranu",
+                menu_check_updates: "Sprawdź aktualizacje...",
+                menu_update_available: "Zainstaluj aktualizację",
+                settings_updates: "Aktualizacje",
+                update_check: "Sprawdź",
+                update_checking: "Sprawdzanie...",
+                update_up_to_date: "Aktualna wersja",
+                update_available: "Dostępna",
+                update_install: "Aktualizuj",
+                update_downloading: "Pobieranie...",
+                update_opened: "Instalator otwarty",
+                update_failed: "Błąd sprawdzania",
+                settings_open_log: "Logi",
+                wayland_hotkeys_note: "Wayland: użyj menu w zasobniku, jeśli skróty globalne nie działają",
             },
             Language::It => Self {
                 menu_full: "Schermo intero",
@@ -238,6 +491,14 @@ impl Strings {
                 hint_window: "Passa su una finestra e clicca  •  Esc per annullare",
                 settings_title: "Impostazioni ShotCraft",
                 settings_lang: "Lingua",
+                settings_text_font: "Carattere testo",
+                settings_toolbar_layout: "Barra strumenti",
+                layout_horizontal: "Orizzont.",
+                layout_vertical: "Verticale",
+                settings_bg_color: "Colore sfondo",
+                settings_accent_color: "Colore accento",
+                settings_shift_angle: "Angolo Shift (1–90°)",
+                settings_angle_hint: "Clicca per scrivere (1–90) o trascina sinistra/destra",
                 settings_folder: "Cartella di salvataggio",
                 settings_choose: "Scegli cartella...",
                 settings_desktop: "Scrivania",
@@ -247,6 +508,41 @@ impl Strings {
                 hk_window: "Cattura finestra",
                 hk_live_draw: "Disegna sullo schermo",
                 hk_press: "Premi tasti...",
+                hotkey_conflict: "Scorciatoia già in uso",
+                hotkey_need_modifier: "Usa almeno un tasto modificatore",
+                tool_move: "Sposta / Ridimensiona [1]",
+                tool_pen: "Penna [2]",
+                tool_marker: "Evidenziatore [3]",
+                tool_line: "Linea [4] (Shift — aggancia angolo)",
+                tool_arrow: "Freccia [5] (Shift — aggancia angolo)",
+                tool_text: "Testo / Richiamo [6]",
+                tool_ellipse: "Ellisse [7] ({MOD} — pieno, Shift — cerchio)",
+                tool_rect: "Rettangolo [8] ({MOD} — pieno, Shift — quadrato)",
+                tool_step: "Numerazione [9]",
+                tool_blur: "Sfocatura [0] ({MOD} — pixel)",
+                act_undo: "Annulla ({MOD}+Z)",
+                act_redo: "Ripeti ({MOD}+Shift+Z)",
+                act_copy: "Copia ({MOD}+C / Invio)",
+                act_save: "Salva ({MOD}+S)",
+                act_close: "Chiudi (Esc)",
+                slider_color: "Colore",
+                slider_size: "Spessore",
+                err_save_failed: "Salvataggio non riuscito",
+                err_copy_failed: "Copia negli appunti non riuscita",
+                err_capture_failed: "Cattura schermo non riuscita",
+                menu_check_updates: "Verifica aggiornamenti...",
+                menu_update_available: "Installa aggiornamento",
+                settings_updates: "Aggiornamenti",
+                update_check: "Verifica",
+                update_checking: "Verifica...",
+                update_up_to_date: "Aggiornato",
+                update_available: "Disponibile",
+                update_install: "Aggiorna",
+                update_downloading: "Download...",
+                update_opened: "Installer aperto",
+                update_failed: "Errore verifica",
+                settings_open_log: "Log",
+                wayland_hotkeys_note: "Wayland: usa il menu nella tray se le scorciatoie sono bloccate",
             },
             Language::Pt => Self {
                 menu_full: "Tela cheia",
@@ -260,15 +556,58 @@ impl Strings {
                 hint_window: "Passe sobre uma janela e clique  •  Esc para cancelar",
                 settings_title: "Configurações ShotCraft",
                 settings_lang: "Idioma",
+                settings_text_font: "Fonte do texto",
+                settings_toolbar_layout: "Barra de ferramentas",
+                layout_horizontal: "Horizontal",
+                layout_vertical: "Vertical",
+                settings_bg_color: "Cor de fundo",
+                settings_accent_color: "Cor de destaque",
+                settings_shift_angle: "Ângulo Shift (1–90°)",
+                settings_angle_hint: "Clique para digitar (1–90) ou arraste esq./dir.",
                 settings_folder: "Pasta de capturas",
                 settings_choose: "Escolher pasta...",
-                settings_desktop: "Mesa",
+                settings_desktop: "Área de Trabalho",
                 settings_hotkeys: "Atalhos globais",
                 hk_full: "Tela cheia",
                 hk_area: "Capturar área",
                 hk_window: "Capturar janela",
                 hk_live_draw: "Desenhar na tela",
                 hk_press: "Pressione teclas...",
+                hotkey_conflict: "Atalho já está em uso",
+                hotkey_need_modifier: "Use pelo menos uma tecla modificadora",
+                tool_move: "Mover / Redimensionar [1]",
+                tool_pen: "Caneta [2]",
+                tool_marker: "Marcador [3]",
+                tool_line: "Linha [4] (Shift — ajustar ângulo)",
+                tool_arrow: "Seta [5] (Shift — ajustar ângulo)",
+                tool_text: "Texto / Balão [6]",
+                tool_ellipse: "Elipse [7] ({MOD} — preenchido, Shift — círculo)",
+                tool_rect: "Retângulo [8] ({MOD} — preenchido, Shift — quadrado)",
+                tool_step: "Numeração [9]",
+                tool_blur: "Desfoque [0] ({MOD} — pixelizar)",
+                act_undo: "Desfazer ({MOD}+Z)",
+                act_redo: "Refazer ({MOD}+Shift+Z)",
+                act_copy: "Copiar ({MOD}+C / Enter)",
+                act_save: "Salvar ({MOD}+S)",
+                act_close: "Fechar (Esc)",
+                slider_color: "Cor",
+                slider_size: "Tamanho",
+                err_save_failed: "Falha ao salvar captura",
+                err_copy_failed: "Falha ao copiar para a área de transferência",
+                err_capture_failed: "Falha ao capturar a tela",
+                menu_check_updates: "Verificar atualizações...",
+                menu_update_available: "Instalar atualização",
+                settings_updates: "Atualizações",
+                update_check: "Verificar",
+                update_checking: "Verificando...",
+                update_up_to_date: "Atualizado",
+                update_available: "Disponível",
+                update_install: "Atualizar",
+                update_downloading: "Baixando...",
+                update_opened: "Instalador aberto",
+                update_failed: "Falha ao verificar",
+                settings_open_log: "Log",
+                wayland_hotkeys_note: "Wayland: use o menu da bandeja se os atalhos globais falharem",
             },
             Language::Tr => Self {
                 menu_full: "Tam Ekran",
@@ -282,6 +621,14 @@ impl Strings {
                 hint_window: "Pencerenin üzerine gelip tıklayın  •  İptal: Esc",
                 settings_title: "ShotCraft Ayarları",
                 settings_lang: "Dil",
+                settings_text_font: "Metin Yazı Tipi",
+                settings_toolbar_layout: "Araç Çubuğu Yönü",
+                layout_horizontal: "Yatay",
+                layout_vertical: "Dikey",
+                settings_bg_color: "Arka Plan Rengi",
+                settings_accent_color: "Vurgu Rengi",
+                settings_shift_angle: "Shift Açı Adımı (1–90°)",
+                settings_angle_hint: "Yazmak için tıklayın (1–90) veya sağa/sola sürükleyin",
                 settings_folder: "Kayıt Klasörü",
                 settings_choose: "Klasör Seç...",
                 settings_desktop: "Masaüstü",
@@ -291,6 +638,41 @@ impl Strings {
                 hk_window: "Pencere Yakala",
                 hk_live_draw: "Ekran Üzerine Çiz",
                 hk_press: "Tuşlara basın...",
+                hotkey_conflict: "Kısayol çakışması",
+                hotkey_need_modifier: "En az bir değiştirici tuş ekleyin",
+                tool_move: "Taşı / Boyutlandır [1]",
+                tool_pen: "Kalem [2]",
+                tool_marker: "Fosforlu Kalem [3]",
+                tool_line: "Çizgi [4] (Shift — açıya yasla)",
+                tool_arrow: "Ok [5] (Shift — açıya yasla)",
+                tool_text: "Metin / Açıklama [6]",
+                tool_ellipse: "Elips [7] ({MOD} — dolu, Shift — daire)",
+                tool_rect: "Dikdörtgen [8] ({MOD} — dolu, Shift — kare)",
+                tool_step: "Numaralandırma [9]",
+                tool_blur: "Bulanıklaştır [0] ({MOD} — pikselleştir)",
+                act_undo: "Geri Al ({MOD}+Z)",
+                act_redo: "Yinele ({MOD}+Shift+Z)",
+                act_copy: "Kopyala ({MOD}+C / Enter)",
+                act_save: "Kaydet ({MOD}+S)",
+                act_close: "Kapat (Esc)",
+                slider_color: "Renk",
+                slider_size: "Boyut",
+                err_save_failed: "Ekran görüntüsü kaydedilemedi",
+                err_copy_failed: "Panoya kopyalanamadı",
+                err_capture_failed: "Ekran yakalama başarısız",
+                menu_check_updates: "Güncellemeleri Denetle...",
+                menu_update_available: "Güncellemeyi Yükle",
+                settings_updates: "Güncellemeler",
+                update_check: "Denetle",
+                update_checking: "Denetleniyor...",
+                update_up_to_date: "Güncel",
+                update_available: "Mevcut",
+                update_install: "Güncelle",
+                update_downloading: "İndiriliyor...",
+                update_opened: "Yükleyici açıldı",
+                update_failed: "Denetim hatası",
+                settings_open_log: "Günlük",
+                wayland_hotkeys_note: "Wayland: genel kısayollar engellenirse tepsi menüsünü kullanın",
             },
             Language::Nl => Self {
                 menu_full: "Volledig scherm",
@@ -304,6 +686,14 @@ impl Strings {
                 hint_window: "Wijs een venster aan en klik  •  Esc om te annuleren",
                 settings_title: "ShotCraft Instellingen",
                 settings_lang: "Taal",
+                settings_text_font: "Tekstlettertype",
+                settings_toolbar_layout: "Werkbalkrichting",
+                layout_horizontal: "Horizont.",
+                layout_vertical: "Verticaal",
+                settings_bg_color: "Achtergrondkleur",
+                settings_accent_color: "Accentkleur",
+                settings_shift_angle: "Shift-hoekstap (1–90°)",
+                settings_angle_hint: "Klik om te typen (1–90) of sleep links/rechts",
                 settings_folder: "Opslagmap",
                 settings_choose: "Map kiezen...",
                 settings_desktop: "Bureaublad",
@@ -313,8 +703,43 @@ impl Strings {
                 hk_window: "Venster vastleggen",
                 hk_live_draw: "Teken op scherm",
                 hk_press: "Druk op toetsen...",
+                hotkey_conflict: "Sneltoets is al in gebruik",
+                hotkey_need_modifier: "Gebruik minstens één modificatietoets",
+                tool_move: "Verplaatsen / Grootte [1]",
+                tool_pen: "Pen [2]",
+                tool_marker: "Markeerstift [3]",
+                tool_line: "Lijn [4] (Shift — hoek uitlijnen)",
+                tool_arrow: "Pijl [5] (Shift — hoek uitlijnen)",
+                tool_text: "Tekst / Callout [6]",
+                tool_ellipse: "Ellips [7] ({MOD} — gevuld, Shift — cirkel)",
+                tool_rect: "Rechthoek [8] ({MOD} — gevuld, Shift — vierkant)",
+                tool_step: "Nummering [9]",
+                tool_blur: "Vervagen [0] ({MOD} — pixelen)",
+                act_undo: "Ongedaan maken ({MOD}+Z)",
+                act_redo: "Opnieuw ({MOD}+Shift+Z)",
+                act_copy: "Kopiëren ({MOD}+C / Enter)",
+                act_save: "Opslaan ({MOD}+S)",
+                act_close: "Sluiten (Esc)",
+                slider_color: "Kleur",
+                slider_size: "Dikte",
+                err_save_failed: "Opslaan van schermafbeelding mislukt",
+                err_copy_failed: "Kopiëren naar klembord mislukt",
+                err_capture_failed: "Scherm vastleggen mislukt",
+                menu_check_updates: "Controleren op updates...",
+                menu_update_available: "Update installeren",
+                settings_updates: "Updates",
+                update_check: "Controleren",
+                update_checking: "Controleren...",
+                update_up_to_date: "Up-to-date",
+                update_available: "Beschikbaar",
+                update_install: "Nu updaten",
+                update_downloading: "Downloaden...",
+                update_opened: "Installatie geopend",
+                update_failed: "Controle mislukt",
+                settings_open_log: "Logboek",
+                wayland_hotkeys_note: "Wayland: gebruik het systeemvakmenu als sneltoetsen zijn geblokkeerd",
             },
-            _ => Self {
+            Language::En => Self {
                 menu_full: "Fullscreen",
                 menu_area: "Area",
                 menu_window: "Window",
@@ -326,6 +751,14 @@ impl Strings {
                 hint_window: "Hover a window and click  •  Esc to cancel",
                 settings_title: "ShotCraft Settings",
                 settings_lang: "Language",
+                settings_text_font: "Text Tool Font",
+                settings_toolbar_layout: "Toolbar Orientation",
+                layout_horizontal: "Horizontal",
+                layout_vertical: "Vertical",
+                settings_bg_color: "Background Color",
+                settings_accent_color: "Accent Color",
+                settings_shift_angle: "Shift Angle Step (1–90°)",
+                settings_angle_hint: "Click to type (1–90) or drag left/right",
                 settings_folder: "Screenshots Save Folder",
                 settings_choose: "Choose Folder...",
                 settings_desktop: "Desktop",
@@ -335,9 +768,52 @@ impl Strings {
                 hk_window: "Window",
                 hk_live_draw: "Screen Draw",
                 hk_press: "Press keys...",
+                hotkey_conflict: "Hotkey already assigned",
+                hotkey_need_modifier: "Include a modifier (Ctrl/Alt/Shift)",
+                tool_move: "Move / Resize [1]",
+                tool_pen: "Pen [2]",
+                tool_marker: "Marker [3]",
+                tool_line: "Line [4] (Shift — snap angle)",
+                tool_arrow: "Arrow [5] (Shift — snap angle)",
+                tool_text: "Text / Callout [6]",
+                tool_ellipse: "Ellipse [7] ({MOD} — filled, Shift — circle)",
+                tool_rect: "Rectangle [8] ({MOD} — filled, Shift — square)",
+                tool_step: "Numbering [9]",
+                tool_blur: "Blur [0] ({MOD} — pixelate)",
+                act_undo: "Undo ({MOD}+Z)",
+                act_redo: "Redo ({MOD}+Shift+Z)",
+                act_copy: "Copy ({MOD}+C / Enter)",
+                act_save: "Save ({MOD}+S)",
+                act_close: "Close (Esc)",
+                slider_color: "Color",
+                slider_size: "Size",
+                err_save_failed: "Failed to save screenshot",
+                err_copy_failed: "Failed to copy to clipboard",
+                err_capture_failed: "Screen capture failed",
+                menu_check_updates: "Check for Updates...",
+                menu_update_available: "Install Update",
+                settings_updates: "Updates",
+                update_check: "Check",
+                update_checking: "Checking...",
+                update_up_to_date: "Up to date",
+                update_available: "Available",
+                update_install: "Update now",
+                update_downloading: "Downloading...",
+                update_opened: "Installer opened",
+                update_failed: "Check failed",
+                settings_open_log: "Log",
+                wayland_hotkeys_note: "Wayland: use the tray menu if global hotkeys are blocked",
             },
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HotkeySlot {
+    Fullscreen,
+    Area,
+    Window,
+    LiveDraw,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -610,6 +1086,10 @@ impl HotkeySpec {
         }
     }
 
+    pub fn has_modifier(self) -> bool {
+        self.ctrl || self.alt || self.shift || self.super_key
+    }
+
     pub fn to_hotkey(self) -> HotKey {
         let mut mods = Modifiers::empty();
         if self.ctrl {
@@ -671,7 +1151,7 @@ impl HotkeySpec {
         parts.join(" + ")
     }
 
-    fn serialize(self) -> String {
+    pub fn serialize(self) -> String {
         format!(
             "{},{},{},{},{}",
             self.ctrl as u8,
@@ -682,16 +1162,21 @@ impl HotkeySpec {
         )
     }
 
-    fn deserialize(s: &str) -> Option<Self> {
+    pub fn deserialize(s: &str) -> Option<Self> {
         let parts: Vec<&str> = s.trim().split(',').collect();
         if parts.len() != 5 {
             return None;
         }
+        let parse_flag = |f: &str| match f {
+            "0" => Some(false),
+            "1" => Some(true),
+            _ => None,
+        };
         Some(Self {
-            ctrl: parts[0] == "1",
-            alt: parts[1] == "1",
-            shift: parts[2] == "1",
-            super_key: parts[3] == "1",
+            ctrl: parse_flag(parts[0])?,
+            alt: parse_flag(parts[1])?,
+            shift: parse_flag(parts[2])?,
+            super_key: parse_flag(parts[3])?,
             key: HotkeyCode::from_label(parts[4])?,
         })
     }
@@ -719,9 +1204,9 @@ pub enum TextFont {
 
 impl TextFont {
     pub const ALL: [Self; 15] = [
+        Self::Roboto,
         Self::GostTypeAU,
         Self::TimesNewRoman,
-        Self::Roboto,
         Self::SanFrancisco,
         Self::Arial,
         Self::ArialBlack,
@@ -760,12 +1245,12 @@ impl TextFont {
         Self::ALL
             .into_iter()
             .find(|f| f.code() == s.trim())
-            .unwrap_or(Self::GostTypeAU)
+            .unwrap_or(Self::Roboto)
     }
 
     pub fn label(self) -> &'static str {
         match self {
-            Self::GostTypeAU => "GOST Type AU",
+            Self::GostTypeAU => "GOST Type AU (System)",
             Self::TimesNewRoman => "Times New Roman",
             Self::Roboto => "Roboto (Google)",
             Self::SanFrancisco => "San Francisco (Apple)",
@@ -803,54 +1288,153 @@ impl TextFont {
         }
     }
 
-    pub fn system_path(self) -> Option<&'static str> {
+    /// Candidate system font paths across macOS, Windows, and Linux.
+    pub fn system_paths(self) -> Vec<PathBuf> {
+        let mut paths = Vec::new();
+        if self == Self::Roboto {
+            return paths;
+        }
+
+        if self == Self::GostTypeAU {
+            #[cfg(target_os = "macos")]
+            {
+                if let Some(home) = dirs::home_dir() {
+                    paths.push(home.join("Library/Fonts/GOST_Type_AU.ttf"));
+                    paths.push(home.join("Library/Fonts/OpenGostTypeA-Regular.ttf"));
+                }
+                paths.push(PathBuf::from("/Library/Fonts/GOST_Type_AU.ttf"));
+                paths.push(PathBuf::from("/Library/Fonts/OpenGostTypeA-Regular.ttf"));
+            }
+            #[cfg(target_os = "windows")]
+            {
+                paths.push(PathBuf::from("C:\\Windows\\Fonts\\GOST_AU.TTF"));
+                paths.push(PathBuf::from("C:\\Windows\\Fonts\\GOST_A.TTF"));
+                paths.push(PathBuf::from("C:\\Windows\\Fonts\\GOST_Type_AU.ttf"));
+                if let Some(local) = dirs::data_local_dir() {
+                    paths.push(local.join("Microsoft\\Windows\\Fonts\\GOST_Type_AU.ttf"));
+                }
+            }
+            #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+            {
+                if let Some(data_dir) = dirs::data_local_dir() {
+                    paths.push(data_dir.join("fonts/GOST_Type_AU.ttf"));
+                    paths.push(data_dir.join("fonts/OpenGostTypeA-Regular.ttf"));
+                }
+                paths.push(PathBuf::from(
+                    "/usr/share/fonts/truetype/opengost/OpenGostTypeA-Regular.ttf",
+                ));
+                paths.push(PathBuf::from(
+                    "/usr/share/fonts/TTF/OpenGostTypeA-Regular.ttf",
+                ));
+            }
+            return paths;
+        }
+
         #[cfg(target_os = "macos")]
         {
-            match self {
-                Self::GostTypeAU | Self::Roboto => None,
-                Self::TimesNewRoman => Some("/System/Library/Fonts/Supplemental/Times New Roman.ttf"),
-                Self::SanFrancisco => Some("/System/Library/Fonts/SFNS.ttf"),
-                Self::Arial => Some("/System/Library/Fonts/Supplemental/Arial.ttf"),
-                Self::ArialBlack => Some("/System/Library/Fonts/Supplemental/Arial Black.ttf"),
-                Self::Georgia => Some("/System/Library/Fonts/Supplemental/Georgia.ttf"),
-                Self::Verdana => Some("/System/Library/Fonts/Supplemental/Verdana.ttf"),
-                Self::Tahoma => Some("/System/Library/Fonts/Supplemental/Tahoma.ttf"),
-                Self::TrebuchetMS => Some("/System/Library/Fonts/Supplemental/Trebuchet MS.ttf"),
-                Self::CourierNew => Some("/System/Library/Fonts/Supplemental/Courier New.ttf"),
-                Self::Impact => Some("/System/Library/Fonts/Supplemental/Impact.ttf"),
-                Self::ComicSansMS => Some("/System/Library/Fonts/Supplemental/Comic Sans MS.ttf"),
-                Self::SFRounded => Some("/System/Library/Fonts/SFNSRounded.ttf"),
-                Self::SFMono => Some("/System/Library/Fonts/SFNSMono.ttf"),
+            let p = match self {
+                Self::TimesNewRoman => "/System/Library/Fonts/Supplemental/Times New Roman.ttf",
+                Self::SanFrancisco => "/System/Library/Fonts/SFNS.ttf",
+                Self::Arial => "/System/Library/Fonts/Supplemental/Arial.ttf",
+                Self::ArialBlack => "/System/Library/Fonts/Supplemental/Arial Black.ttf",
+                Self::Georgia => "/System/Library/Fonts/Supplemental/Georgia.ttf",
+                Self::Verdana => "/System/Library/Fonts/Supplemental/Verdana.ttf",
+                Self::Tahoma => "/System/Library/Fonts/Supplemental/Tahoma.ttf",
+                Self::TrebuchetMS => "/System/Library/Fonts/Supplemental/Trebuchet MS.ttf",
+                Self::CourierNew => "/System/Library/Fonts/Supplemental/Courier New.ttf",
+                Self::Impact => "/System/Library/Fonts/Supplemental/Impact.ttf",
+                Self::ComicSansMS => "/System/Library/Fonts/Supplemental/Comic Sans MS.ttf",
+                Self::SFRounded => "/System/Library/Fonts/SFNSRounded.ttf",
+                Self::SFMono => "/System/Library/Fonts/SFNSMono.ttf",
+                Self::GostTypeAU | Self::Roboto => "",
+            };
+            if !p.is_empty() {
+                paths.push(PathBuf::from(p));
             }
         }
         #[cfg(target_os = "windows")]
         {
-            match self {
-                Self::GostTypeAU | Self::Roboto => None,
-                Self::TimesNewRoman => Some("C:\\Windows\\Fonts\\times.ttf"),
-                Self::SanFrancisco => Some("C:\\Windows\\Fonts\\segoeui.ttf"),
-                Self::Arial => Some("C:\\Windows\\Fonts\\arial.ttf"),
-                Self::ArialBlack => Some("C:\\Windows\\Fonts\\ariblk.ttf"),
-                Self::Georgia => Some("C:\\Windows\\Fonts\\georgia.ttf"),
-                Self::Verdana => Some("C:\\Windows\\Fonts\\verdana.ttf"),
-                Self::Tahoma => Some("C:\\Windows\\Fonts\\tahoma.ttf"),
-                Self::TrebuchetMS => Some("C:\\Windows\\Fonts\\trebuc.ttf"),
-                Self::CourierNew => Some("C:\\Windows\\Fonts\\cour.ttf"),
-                Self::Impact => Some("C:\\Windows\\Fonts\\impact.ttf"),
-                Self::ComicSansMS => Some("C:\\Windows\\Fonts\\comic.ttf"),
-                Self::SFRounded => Some("C:\\Windows\\Fonts\\calibri.ttf"),
-                Self::SFMono => Some("C:\\Windows\\Fonts\\consola.ttf"),
+            let p = match self {
+                Self::TimesNewRoman => "C:\\Windows\\Fonts\\times.ttf",
+                Self::SanFrancisco => "C:\\Windows\\Fonts\\segoeui.ttf",
+                Self::Arial => "C:\\Windows\\Fonts\\arial.ttf",
+                Self::ArialBlack => "C:\\Windows\\Fonts\\ariblk.ttf",
+                Self::Georgia => "C:\\Windows\\Fonts\\georgia.ttf",
+                Self::Verdana => "C:\\Windows\\Fonts\\verdana.ttf",
+                Self::Tahoma => "C:\\Windows\\Fonts\\tahoma.ttf",
+                Self::TrebuchetMS => "C:\\Windows\\Fonts\\trebuc.ttf",
+                Self::CourierNew => "C:\\Windows\\Fonts\\cour.ttf",
+                Self::Impact => "C:\\Windows\\Fonts\\impact.ttf",
+                Self::ComicSansMS => "C:\\Windows\\Fonts\\comic.ttf",
+                Self::SFRounded => "C:\\Windows\\Fonts\\calibri.ttf",
+                Self::SFMono => "C:\\Windows\\Fonts\\consola.ttf",
+                Self::GostTypeAU | Self::Roboto => "",
+            };
+            if !p.is_empty() {
+                paths.push(PathBuf::from(p));
             }
         }
         #[cfg(not(any(target_os = "macos", target_os = "windows")))]
         {
-            let _ = self;
-            None
+            let candidates: &[&str] = match self {
+                Self::TimesNewRoman => &[
+                    "/usr/share/fonts/truetype/liberation/LiberationSerif-Regular.ttf",
+                    "/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf",
+                    "/usr/share/fonts/truetype/noto/NotoSerif-Regular.ttf",
+                ],
+                Self::Georgia => &[
+                    "/usr/share/fonts/truetype/noto/NotoSerif-Regular.ttf",
+                    "/usr/share/fonts/truetype/liberation/LiberationSerif-Regular.ttf",
+                    "/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf",
+                ],
+                Self::SanFrancisco => &[
+                    "/usr/share/fonts/truetype/ubuntu/Ubuntu-R.ttf",
+                    "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+                    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+                ],
+                Self::Arial | Self::Verdana | Self::Tahoma | Self::TrebuchetMS => &[
+                    "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+                    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+                    "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+                    "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
+                ],
+                Self::ArialBlack | Self::Impact => &[
+                    "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+                    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+                    "/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf",
+                ],
+                Self::CourierNew | Self::SFMono => &[
+                    "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf",
+                    "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+                    "/usr/share/fonts/truetype/ubuntu/UbuntuMono-R.ttf",
+                    "/usr/share/fonts/truetype/freefont/FreeMono.ttf",
+                ],
+                Self::ComicSansMS => &[
+                    "/usr/share/fonts/truetype/comic-neue/ComicNeue-Regular.ttf",
+                    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+                ],
+                Self::SFRounded => &[
+                    "/usr/share/fonts/truetype/crosextra/Carlito-Regular.ttf",
+                    "/usr/share/fonts/truetype/ubuntu/Ubuntu-R.ttf",
+                    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+                ],
+                Self::GostTypeAU | Self::Roboto => &[],
+            };
+            for &c in candidates {
+                paths.push(PathBuf::from(c));
+            }
         }
+
+        paths
+    }
+
+    /// Read the first available system font file for this variant.
+    pub fn resolve_font_bytes(self) -> Option<Vec<u8>> {
+        self.system_paths()
+            .into_iter()
+            .find_map(|p| fs::read(p).ok())
     }
 }
-
-use crate::annotations::Tool;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolbarLayout {
@@ -858,7 +1442,7 @@ pub enum ToolbarLayout {
     Vertical,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct AppSettings {
     pub language: Language,
     pub save_dir: PathBuf,
@@ -890,7 +1474,7 @@ impl Default for AppSettings {
             draw_color_pos: 0.56,
             draw_thickness: 5.0,
             snap_angle_deg: 90,
-            text_font: TextFont::GostTypeAU,
+            text_font: TextFont::Roboto,
             toolbar_layout: ToolbarLayout::Horizontal,
             last_tool: Tool::Arrow,
         }
@@ -911,8 +1495,20 @@ fn config_path() -> PathBuf {
 }
 
 impl AppSettings {
+    pub fn hotkey_conflict(&self, slot: HotkeySlot, spec: HotkeySpec) -> Option<HotkeySlot> {
+        let pairs = [
+            (HotkeySlot::Fullscreen, self.hk_fullscreen),
+            (HotkeySlot::Area, self.hk_area),
+            (HotkeySlot::Window, self.hk_window),
+            (HotkeySlot::LiveDraw, self.hk_live_draw),
+        ];
+        pairs
+            .into_iter()
+            .find(|(s, existing)| *s != slot && *existing == spec)
+            .map(|(s, _)| s)
+    }
+
     pub fn load() -> Self {
-        let mut s = Self::default();
         let path = config_path();
         let content = fs::read_to_string(&path).or_else(|_| {
             let legacy = dirs::config_dir()
@@ -922,9 +1518,14 @@ impl AppSettings {
                 .join("settings.conf");
             fs::read_to_string(legacy)
         });
-        let Ok(content) = content else {
-            return s;
-        };
+        match content {
+            Ok(text) => Self::parse_from_str(&text),
+            Err(_) => Self::default(),
+        }
+    }
+
+    pub fn parse_from_str(content: &str) -> Self {
+        let mut s = Self::default();
         for line in content.lines() {
             let Some((k, v)) = line.split_once('=') else {
                 continue;
@@ -934,9 +1535,9 @@ impl AppSettings {
                     s.language = Language::from_code(v);
                 }
                 "save_dir" => {
-                    let p = PathBuf::from(v.trim());
-                    if !v.trim().is_empty() {
-                        s.save_dir = p;
+                    let trimmed = v.trim();
+                    if !trimmed.is_empty() {
+                        s.save_dir = PathBuf::from(trimmed);
                     }
                 }
                 "hk_fullscreen" => {
@@ -961,22 +1562,30 @@ impl AppSettings {
                 }
                 "bg_color_pos" => {
                     if let Ok(p) = v.trim().parse::<f32>() {
-                        s.bg_color_pos = p.clamp(0.0, 1.0);
+                        if p.is_finite() {
+                            s.bg_color_pos = p.clamp(0.0, 1.0);
+                        }
                     }
                 }
                 "accent_color_pos" => {
                     if let Ok(p) = v.trim().parse::<f32>() {
-                        s.accent_color_pos = p.clamp(0.0, 1.0);
+                        if p.is_finite() {
+                            s.accent_color_pos = p.clamp(0.0, 1.0);
+                        }
                     }
                 }
                 "draw_color_pos" => {
                     if let Ok(p) = v.trim().parse::<f32>() {
-                        s.draw_color_pos = p.clamp(0.0, 1.0);
+                        if p.is_finite() {
+                            s.draw_color_pos = p.clamp(0.0, 1.0);
+                        }
                     }
                 }
                 "draw_thickness" => {
                     if let Ok(t) = v.trim().parse::<f32>() {
-                        s.draw_thickness = t.clamp(1.5, 20.0);
+                        if t.is_finite() {
+                            s.draw_thickness = t.clamp(1.5, 20.0);
+                        }
                     }
                 }
                 "snap_angle_deg" => {
@@ -1003,16 +1612,12 @@ impl AppSettings {
         s
     }
 
-    pub fn save(&self) {
-        let path = config_path();
-        if let Some(parent) = path.parent() {
-            let _ = fs::create_dir_all(parent);
-        }
+    pub fn serialize_to_string(&self) -> String {
         let layout_str = match self.toolbar_layout {
             ToolbarLayout::Horizontal => "horizontal",
             ToolbarLayout::Vertical => "vertical",
         };
-        let data = format!(
+        format!(
             "language={}\nsave_dir={}\nhk_fullscreen={}\nhk_area={}\nhk_window={}\nhk_live_draw={}\nbg_color_pos={:.3}\naccent_color_pos={:.3}\ndraw_color_pos={:.3}\ndraw_thickness={:.2}\nsnap_angle_deg={}\ntext_font={}\ntoolbar_layout={}\nlast_tool={}\n",
             self.language.code(),
             self.save_dir.display(),
@@ -1028,7 +1633,123 @@ impl AppSettings {
             self.text_font.code(),
             layout_str,
             self.last_tool.code(),
+        )
+    }
+
+    pub fn save(&self) {
+        let path = config_path();
+        if let Some(parent) = path.parent() {
+            if let Err(e) = fs::create_dir_all(parent) {
+                diagnostics::log_error("settings.save", &format!("mkdir failed: {e}"));
+                return;
+            }
+        }
+        let data = self.serialize_to_string();
+        let tmp = path.with_extension("conf.tmp");
+        if let Err(e) = fs::write(&tmp, &data) {
+            diagnostics::log_error("settings.save", &format!("write tmp failed: {e}"));
+            return;
+        }
+        if let Err(rename_err) = fs::rename(&tmp, &path) {
+            let _ = fs::remove_file(&tmp);
+            if let Err(write_err) = fs::write(&path, &data) {
+                diagnostics::log_error(
+                    "settings.save",
+                    &format!("rename ({rename_err}) & fallback write ({write_err}) failed"),
+                );
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn language_roundtrip_and_fallback() {
+        assert_eq!(Language::ALL.len(), 10);
+        for lang in Language::ALL {
+            assert_eq!(Language::from_code(lang.code()), lang);
+            let s = Strings::for_lang(lang);
+            assert!(!s.settings_title.is_empty());
+            assert!(!s.err_save_failed.is_empty());
+        }
+        assert_eq!(Language::from_code("zh"), Language::En);
+        assert_eq!(Language::from_code("unknown"), Language::En);
+    }
+
+    #[test]
+    fn hotkey_spec_roundtrip_and_validation() {
+        let spec = HotkeySpec {
+            ctrl: true,
+            alt: false,
+            shift: true,
+            super_key: false,
+            key: HotkeyCode::KeyS,
+        };
+        let s = spec.serialize();
+        assert_eq!(HotkeySpec::deserialize(&s), Some(spec));
+        assert!(spec.has_modifier());
+
+        let bare = HotkeySpec {
+            ctrl: false,
+            alt: false,
+            shift: false,
+            super_key: false,
+            key: HotkeyCode::Digit1,
+        };
+        assert!(!bare.has_modifier());
+
+        assert!(HotkeySpec::deserialize("1,0,1,0").is_none());
+        assert!(HotkeySpec::deserialize("2,0,1,0,A").is_none());
+        assert!(HotkeySpec::deserialize("1,0,1,0,UNKNOWN").is_none());
+    }
+
+    #[test]
+    fn settings_serialize_parse_roundtrip_and_clamping() {
+        let mut s = AppSettings::default();
+        s.language = Language::Uk;
+        s.save_dir = PathBuf::from("/tmp/shotcraft_shots");
+        s.bg_color_pos = 0.75;
+        s.accent_color_pos = 0.125;
+        s.draw_color_pos = 0.5;
+        s.draw_thickness = 12.5;
+        s.snap_angle_deg = 45;
+        s.text_font = TextFont::CourierNew;
+        s.toolbar_layout = ToolbarLayout::Vertical;
+        s.last_tool = Tool::Blur;
+
+        let serialized = s.serialize_to_string();
+        let parsed = AppSettings::parse_from_str(&serialized);
+        assert_eq!(parsed.language, s.language);
+        assert_eq!(parsed.save_dir, s.save_dir);
+        assert_eq!(parsed.snap_angle_deg, 45);
+        assert_eq!(parsed.text_font, TextFont::CourierNew);
+        assert_eq!(parsed.toolbar_layout, ToolbarLayout::Vertical);
+        assert_eq!(parsed.last_tool, Tool::Blur);
+        assert!((parsed.draw_thickness - 12.5).abs() < 0.01);
+
+        let clamped = AppSettings::parse_from_str(
+            "unknown_key=123\nbg_color_pos=-5.0\ndraw_thickness=999.0\nsnap_angle_deg=0\nbad_line\n",
         );
-        let _ = fs::write(path, data);
+        assert_eq!(clamped.bg_color_pos, 0.0);
+        assert_eq!(clamped.draw_thickness, 20.0);
+        assert_eq!(clamped.snap_angle_deg, 1);
+    }
+
+    #[test]
+    fn hotkey_conflict_detection() {
+        let s = AppSettings::default();
+        assert_eq!(
+            s.hotkey_conflict(HotkeySlot::Area, s.hk_fullscreen),
+            Some(HotkeySlot::Fullscreen)
+        );
+        assert_eq!(
+            s.hotkey_conflict(HotkeySlot::Fullscreen, s.hk_fullscreen),
+            None
+        );
+        let unique = HotkeySpec::opt_shift(HotkeyCode::KeyZ);
+        assert_eq!(s.hotkey_conflict(HotkeySlot::Area, unique), None);
     }
 }

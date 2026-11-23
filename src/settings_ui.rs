@@ -1,32 +1,27 @@
-use std::ffi::CString;
-use std::num::NonZeroU32;
+use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use egui::{CornerRadius, Pos2, Rect, Stroke, Vec2};
-use glutin::config::{ConfigTemplateBuilder, GlConfig};
-use glutin::context::{
-    ContextApi, ContextAttributesBuilder, NotCurrentGlContext, PossiblyCurrentContext,
-    PossiblyCurrentGlContext,
-};
-use glutin::display::{GetGlDisplay, GlDisplay};
-use glutin::surface::{GlSurface, Surface, SurfaceAttributesBuilder, WindowSurface};
-use glutin_winit::DisplayBuilder;
-use raw_window_handle::HasWindowHandle;
-use winit::dpi::{LogicalSize, PhysicalSize};
+use winit::dpi::LogicalSize;
 use winit::event::{ElementState, WindowEvent};
-use winit::event_loop::ActiveEventLoop;
+use winit::event_loop::{ActiveEventLoop, EventLoopProxy};
 use winit::keyboard::{ModifiersState, PhysicalKey};
-use winit::window::{Window, WindowAttributes, WindowId};
+use winit::window::{WindowAttributes, WindowId};
 
 use crate::annotations::ROBOTO_FONT_BYTES;
 use crate::capture::pick_folder_dialog;
+use crate::diagnostics;
+use crate::gl_window::{GlEguiWindow, WindowChrome};
 use crate::material::{
     m3_accent_slider, m3_bg_slider, morph_radius, spring_animate, spring_scale, ThemeColors,
 };
 use crate::settings::{
-    default_desktop_dir, AppSettings, HotkeyCode, HotkeySpec, Language, Strings, TextFont,
-    ToolbarLayout,
+    default_desktop_dir, AppSettings, HotkeyCode, HotkeySlot, HotkeySpec, Language, Strings,
+    TextFont, ToolbarLayout,
 };
+use crate::updater::UpdateState;
+use crate::AppEvent;
 
 pub enum SettingsOutcome {
     KeepOpen,
@@ -34,137 +29,93 @@ pub enum SettingsOutcome {
     Close,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum HotkeySlot {
-    Fullscreen,
-    Area,
-    Window,
-    LiveDraw,
-}
-
 pub struct SettingsWindow {
-    window: Window,
-    gl_context: PossiblyCurrentContext,
-    gl_surface: Surface<WindowSurface>,
-    gl: Arc<glow::Context>,
-    egui_ctx: egui::Context,
-    egui_state: egui_winit::State,
-    egui_painter: egui_glow::Painter,
-
+    gl_win: GlEguiWindow,
+    event_proxy: EventLoopProxy<AppEvent>,
     modifiers: ModifiersState,
     recording: Option<HotkeySlot>,
+    hotkey_warning: Option<(String, Instant)>,
+    picking_folder: bool,
     lang_dropdown_open: bool,
     font_dropdown_open: bool,
     angle_editing: bool,
     angle_buf: String,
     angle_drag_accum: f32,
+    update_state: UpdateState,
 }
 
 impl SettingsWindow {
-    pub fn open(event_loop: &ActiveEventLoop) -> Result<Self, String> {
+    pub fn open(
+        event_loop: &ActiveEventLoop,
+        lang: Language,
+        event_proxy: EventLoopProxy<AppEvent>,
+        update_state: UpdateState,
+    ) -> Result<Self, String> {
+        let t = Strings::for_lang(lang);
+        let title = format!("ShotCraft v{} — {}", env!("CARGO_PKG_VERSION"), t.settings_title);
+        let height = if cfg!(target_os = "linux")
+            && std::env::var("XDG_SESSION_TYPE").ok().as_deref() == Some("wayland")
+        {
+            778.0
+        } else {
+            758.0
+        };
         let win_attrs = WindowAttributes::default()
-            .with_title("ShotCraft v0.5 Settings")
+            .with_title(title)
             .with_resizable(false)
-            .with_inner_size(LogicalSize::new(500.0, 682.0));
+            .with_inner_size(LogicalSize::new(500.0, height));
 
-        let template = ConfigTemplateBuilder::new().with_alpha_size(8);
-        let (window, gl_config) = DisplayBuilder::new()
-            .with_window_attributes(Some(win_attrs))
-            .build(event_loop, template, |configs| {
-                configs
-                    .reduce(|accum, config| {
-                        if config.num_samples() < accum.num_samples() {
-                            config
-                        } else {
-                            accum
-                        }
-                    })
-                    .expect("No GL config found")
-            })
-            .map_err(|e| format!("Failed to create settings window: {e}"))?;
-
-        let window = window.ok_or_else(|| "Settings window not created".to_string())?;
-        window.focus_window();
-
-        let raw_handle = window
-            .window_handle()
-            .map_err(|e| format!("Window handle error: {e}"))?
-            .as_raw();
-
-        let gl_display = gl_config.display();
-        let context_attrs = ContextAttributesBuilder::new()
-            .with_context_api(ContextApi::OpenGl(None))
-            .build(Some(raw_handle));
-
-        let not_current = unsafe {
-            gl_display
-                .create_context(&gl_config, &context_attrs)
-                .map_err(|e| format!("GL context error: {e}"))?
-        };
-
-        let size = window.inner_size();
-        let attrs = SurfaceAttributesBuilder::<WindowSurface>::new().build(
-            raw_handle,
-            NonZeroU32::new(size.width.max(1)).unwrap(),
-            NonZeroU32::new(size.height.max(1)).unwrap(),
-        );
-        let gl_surface = unsafe {
-            gl_display
-                .create_window_surface(&gl_config, &attrs)
-                .map_err(|e| format!("GL surface error: {e}"))?
-        };
-        let gl_context = not_current
-            .make_current(&gl_surface)
-            .map_err(|e| format!("Make current error: {e}"))?;
-
-        let gl = Arc::new(unsafe {
-            glow::Context::from_loader_function(|s| {
-                let c = CString::new(s).unwrap();
-                gl_display.get_proc_address(&c) as *const _
-            })
-        });
-
-        let egui_ctx = egui::Context::default();
-        configure_m3_fonts(&egui_ctx);
-
-        let egui_state = egui_winit::State::new(
-            egui_ctx.clone(),
-            egui::ViewportId::ROOT,
-            &window,
-            Some(window.scale_factor() as f32),
-            None,
-            None,
-        );
-        let egui_painter = egui_glow::Painter::new(gl.clone(), "", None, false)
-            .map_err(|e| format!("egui_glow error: {e}"))?;
-
-        window.request_redraw();
+        let gl_win = GlEguiWindow::open(
+            event_loop,
+            win_attrs,
+            WindowChrome::Standard,
+            false,
+            configure_m3_fonts,
+        )?;
+        gl_win.window.focus_window();
+        gl_win.window.request_redraw();
 
         Ok(Self {
-            window,
-            gl_context,
-            gl_surface,
-            gl,
-            egui_ctx,
-            egui_state,
-            egui_painter,
+            gl_win,
+            event_proxy,
             modifiers: ModifiersState::empty(),
             recording: None,
+            hotkey_warning: None,
+            picking_folder: false,
             lang_dropdown_open: false,
             font_dropdown_open: false,
             angle_editing: false,
             angle_buf: String::new(),
             angle_drag_accum: 0.0,
+            update_state,
         })
     }
 
+    pub fn set_update_state(&mut self, state: UpdateState) {
+        self.update_state = state;
+        self.gl_win.window.request_redraw();
+    }
+
     pub fn window_id(&self) -> WindowId {
-        self.window.id()
+        self.gl_win.window_id()
     }
 
     pub fn focus(&self) {
-        self.window.set_minimized(false);
-        self.window.focus_window();
+        self.gl_win.window.set_minimized(false);
+        self.gl_win.window.focus_window();
+    }
+
+    pub fn on_folder_picked(&mut self, dir: Option<PathBuf>, settings: &mut AppSettings) -> bool {
+        self.picking_folder = false;
+        let updated = if let Some(d) = dir {
+            settings.save_dir = d;
+            settings.save();
+            true
+        } else {
+            false
+        };
+        self.gl_win.window.request_redraw();
+        updated
     }
 
     pub fn handle_window_event(
@@ -186,11 +137,12 @@ impl SettingsWindow {
                     if let PhysicalKey::Code(winit::keyboard::KeyCode::Escape) = key_ev.physical_key
                     {
                         self.recording = None;
-                        self.window.request_redraw();
+                        self.gl_win.window.request_redraw();
                         return SettingsOutcome::KeepOpen;
                     }
                     if let PhysicalKey::Code(code) = key_ev.physical_key {
                         if let Some(hk_code) = HotkeyCode::from_winit(code) {
+                            let t = Strings::for_lang(settings.language);
                             let spec = HotkeySpec {
                                 ctrl: self.modifiers.control_key(),
                                 alt: self.modifiers.alt_key(),
@@ -198,6 +150,20 @@ impl SettingsWindow {
                                 super_key: self.modifiers.super_key(),
                                 key: hk_code,
                             };
+                            if !spec.has_modifier() {
+                                self.hotkey_warning =
+                                    Some((t.hotkey_need_modifier.to_string(), Instant::now()));
+                                self.recording = None;
+                                self.gl_win.window.request_redraw();
+                                return SettingsOutcome::KeepOpen;
+                            }
+                            if settings.hotkey_conflict(slot, spec).is_some() {
+                                self.hotkey_warning =
+                                    Some((t.hotkey_conflict.to_string(), Instant::now()));
+                                self.recording = None;
+                                self.gl_win.window.request_redraw();
+                                return SettingsOutcome::KeepOpen;
+                            }
                             match slot {
                                 HotkeySlot::Fullscreen => settings.hk_fullscreen = spec,
                                 HotkeySlot::Area => settings.hk_area = spec,
@@ -205,8 +171,9 @@ impl SettingsWindow {
                                 HotkeySlot::LiveDraw => settings.hk_live_draw = spec,
                             }
                             settings.save();
+                            self.hotkey_warning = None;
                             self.recording = None;
-                            self.window.request_redraw();
+                            self.gl_win.window.request_redraw();
                             return SettingsOutcome::Updated;
                         }
                     }
@@ -215,23 +182,11 @@ impl SettingsWindow {
         }
 
         if let WindowEvent::Focused(true) = event {
-            self.window.request_redraw();
+            self.gl_win.window.request_redraw();
         }
 
-        if let WindowEvent::Resized(PhysicalSize { width, height }) = event {
-            if *width > 0 && *height > 0 {
-                let _ = self.gl_context.make_current(&self.gl_surface);
-                self.gl_surface.resize(
-                    &self.gl_context,
-                    NonZeroU32::new(*width).unwrap(),
-                    NonZeroU32::new(*height).unwrap(),
-                );
-            }
-        }
-
-        let resp = self.egui_state.on_window_event(&self.window, event);
-        if resp.repaint {
-            self.window.request_redraw();
+        if self.gl_win.on_window_event(event) {
+            self.gl_win.window.request_redraw();
         }
 
         if matches!(event, WindowEvent::RedrawRequested) {
@@ -242,15 +197,22 @@ impl SettingsWindow {
     }
 
     fn draw_frame(&mut self, settings: &mut AppSettings) -> SettingsOutcome {
-        let _ = self.gl_context.make_current(&self.gl_surface);
-        let raw_input = self.egui_state.take_egui_input(&self.window);
-        let egui_ctx = self.egui_ctx.clone();
+        self.gl_win.make_current();
+        if let Some((_, ts)) = &self.hotkey_warning {
+            if ts.elapsed() > Duration::from_secs(4) {
+                self.hotkey_warning = None;
+            }
+        }
+
+        let raw_input = self.gl_win.take_egui_input();
+        let egui_ctx = self.gl_win.egui_ctx.clone();
         let mut updated = false;
+        let mut lang_changed = false;
 
         let full_output = egui_ctx.run(raw_input, |ctx| {
             let t = Strings::for_lang(settings.language);
-            let theme = ThemeColors::from_positions(settings.bg_color_pos, settings.accent_color_pos);
-            let uk = settings.language == Language::Uk;
+            let theme =
+                ThemeColors::from_positions(settings.bg_color_pos, settings.accent_color_pos);
             let mut dropdown_anchor = Rect::NOTHING;
             let mut font_anchor = Rect::NOTHING;
             let prev_recording = self.recording;
@@ -259,7 +221,7 @@ impl SettingsWindow {
                 .frame(
                     egui::Frame::NONE
                         .fill(theme.surface)
-                        .inner_margin(egui::Margin::same(20)),
+                        .inner_margin(egui::Margin::same(18)),
                 )
                 .show(ctx, |ui| {
                     ui.spacing_mut().item_spacing.y = 0.0;
@@ -269,7 +231,7 @@ impl SettingsWindow {
                             .color(theme.on_surface)
                             .strong(),
                     );
-                    ui.add_space(14.0);
+                    ui.add_space(12.0);
 
                     // 1. Interface Card: Language, Text Font, Toolbar Orientation
                     m3_card(ui, &theme, |ui| {
@@ -282,55 +244,12 @@ impl SettingsWindow {
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                 let arrow = if self.lang_dropdown_open { "^" } else { "v" };
                                 let label = format!("{}  {}", settings.language.label(), arrow);
-                                let (rect, resp) = ui.allocate_exact_size(
-                                    Vec2::new(186.0, 30.0),
-                                    egui::Sense::click(),
-                                );
-                                let scale = spring_scale(
-                                    ui.ctx(),
-                                    resp.id,
-                                    resp.hovered(),
-                                    resp.is_pointer_button_down_on(),
-                                );
-                                let draw_rect = Rect::from_center_size(rect.center(), rect.size() * scale);
-                                let r = morph_radius(
-                                    ui.ctx(),
-                                    resp.id,
-                                    draw_rect.height(),
-                                    self.lang_dropdown_open || resp.is_pointer_button_down_on(),
-                                );
-                                ui.painter().rect_filled(
-                                    draw_rect,
-                                    r,
-                                    if self.lang_dropdown_open {
-                                        theme.accent
-                                    } else {
-                                        theme.surface_container_high
-                                    },
-                                );
-                                ui.painter().rect_stroke(
-                                    draw_rect,
-                                    r,
-                                    Stroke::new(
-                                        1.0_f32,
-                                        if resp.hovered() && !self.lang_dropdown_open {
-                                            theme.accent
-                                        } else {
-                                            theme.outline
-                                        },
-                                    ),
-                                    egui::StrokeKind::Inside,
-                                );
-                                ui.painter().text(
-                                    draw_rect.center(),
-                                    egui::Align2::CENTER_CENTER,
-                                    label,
-                                    egui::FontId::proportional(13.0),
-                                    if self.lang_dropdown_open {
-                                        theme.on_accent
-                                    } else {
-                                        theme.on_surface
-                                    },
+                                let (rect, resp) = draw_dropdown_trigger(
+                                    ui,
+                                    &label,
+                                    13.0,
+                                    self.lang_dropdown_open,
+                                    &theme,
                                 );
                                 dropdown_anchor = rect;
                                 if resp.clicked() {
@@ -342,66 +261,19 @@ impl SettingsWindow {
                         ui.add_space(8.0);
                         ui.horizontal(|ui| {
                             ui.label(
-                                egui::RichText::new(if uk {
-                                    "Шрифт (інструмент Текст)"
-                                } else {
-                                    "Text Tool Font"
-                                })
-                                .size(13.5)
-                                .color(theme.on_surface),
+                                egui::RichText::new(t.settings_text_font)
+                                    .size(13.5)
+                                    .color(theme.on_surface),
                             );
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                 let arrow = if self.font_dropdown_open { "^" } else { "v" };
                                 let label = format!("{}  {}", settings.text_font.label(), arrow);
-                                let (rect, resp) = ui.allocate_exact_size(
-                                    Vec2::new(186.0, 30.0),
-                                    egui::Sense::click(),
-                                );
-                                let scale = spring_scale(
-                                    ui.ctx(),
-                                    resp.id,
-                                    resp.hovered(),
-                                    resp.is_pointer_button_down_on(),
-                                );
-                                let draw_rect = Rect::from_center_size(rect.center(), rect.size() * scale);
-                                let r = morph_radius(
-                                    ui.ctx(),
-                                    resp.id,
-                                    draw_rect.height(),
-                                    self.font_dropdown_open || resp.is_pointer_button_down_on(),
-                                );
-                                ui.painter().rect_filled(
-                                    draw_rect,
-                                    r,
-                                    if self.font_dropdown_open {
-                                        theme.accent
-                                    } else {
-                                        theme.surface_container_high
-                                    },
-                                );
-                                ui.painter().rect_stroke(
-                                    draw_rect,
-                                    r,
-                                    Stroke::new(
-                                        1.0_f32,
-                                        if resp.hovered() && !self.font_dropdown_open {
-                                            theme.accent
-                                        } else {
-                                            theme.outline
-                                        },
-                                    ),
-                                    egui::StrokeKind::Inside,
-                                );
-                                ui.painter().text(
-                                    draw_rect.center(),
-                                    egui::Align2::CENTER_CENTER,
-                                    label,
-                                    egui::FontId::proportional(12.5),
-                                    if self.font_dropdown_open {
-                                        theme.on_accent
-                                    } else {
-                                        theme.on_surface
-                                    },
+                                let (rect, resp) = draw_dropdown_trigger(
+                                    ui,
+                                    &label,
+                                    12.5,
+                                    self.font_dropdown_open,
+                                    &theme,
                                 );
                                 font_anchor = rect;
                                 if resp.clicked() {
@@ -413,13 +285,9 @@ impl SettingsWindow {
                         ui.add_space(8.0);
                         ui.horizontal(|ui| {
                             ui.label(
-                                egui::RichText::new(if uk {
-                                    "Панель інструментів"
-                                } else {
-                                    "Toolbar Orientation"
-                                })
-                                .size(13.5)
-                                .color(theme.on_surface),
+                                egui::RichText::new(t.settings_toolbar_layout)
+                                    .size(13.5)
+                                    .color(theme.on_surface),
                             );
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                 let (seg_rect, _) = ui.allocate_exact_size(
@@ -486,19 +354,27 @@ impl SettingsWindow {
                                 );
                                 ui.painter().rect_filled(pill_draw, 7.0, theme.accent);
 
-                                let h_col = if !is_vert { theme.on_accent } else { theme.on_surface };
-                                let v_col = if is_vert { theme.on_accent } else { theme.on_surface };
+                                let h_col = if !is_vert {
+                                    theme.on_accent
+                                } else {
+                                    theme.on_surface
+                                };
+                                let v_col = if is_vert {
+                                    theme.on_accent
+                                } else {
+                                    theme.on_surface
+                                };
                                 ui.painter().text(
                                     left_rect.center(),
                                     egui::Align2::CENTER_CENTER,
-                                    if uk { "Горизонт." } else { "Horizontal" },
+                                    t.layout_horizontal,
                                     egui::FontId::proportional(12.0),
                                     h_col,
                                 );
                                 ui.painter().text(
                                     right_rect.center(),
                                     egui::Align2::CENTER_CENTER,
-                                    if uk { "Вертик." } else { "Vertical" },
+                                    t.layout_vertical,
                                     egui::FontId::proportional(12.0),
                                     v_col,
                                 );
@@ -517,13 +393,13 @@ impl SettingsWindow {
                         });
                     });
 
-                    ui.add_space(12.0);
+                    ui.add_space(10.0);
 
                     // 2. Theme Colors & Shift Angle Card
                     m3_card(ui, &theme, |ui| {
                         ui.horizontal(|ui| {
                             ui.label(
-                                egui::RichText::new(if uk { "Колір фону" } else { "Background Color" })
+                                egui::RichText::new(t.settings_bg_color)
                                     .size(13.5)
                                     .color(theme.on_surface),
                             );
@@ -537,7 +413,7 @@ impl SettingsWindow {
                         ui.add_space(8.0);
                         ui.horizontal(|ui| {
                             ui.label(
-                                egui::RichText::new(if uk { "Колір акценту" } else { "Accent Color" })
+                                egui::RichText::new(t.settings_accent_color)
                                     .size(13.5)
                                     .color(theme.on_surface),
                             );
@@ -551,13 +427,9 @@ impl SettingsWindow {
                         ui.add_space(8.0);
                         ui.horizontal(|ui| {
                             ui.label(
-                                egui::RichText::new(if uk {
-                                    "Кут Shift (1–90°)"
-                                } else {
-                                    "Shift Angle Step (1–90°)"
-                                })
-                                .size(13.5)
-                                .color(theme.on_surface),
+                                egui::RichText::new(t.settings_shift_angle)
+                                    .size(13.5)
+                                    .color(theme.on_surface),
                             );
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                 if angle_step_widget(
@@ -566,6 +438,7 @@ impl SettingsWindow {
                                     &mut self.angle_editing,
                                     &mut self.angle_buf,
                                     &mut self.angle_drag_accum,
+                                    t.settings_angle_hint,
                                     &theme,
                                 ) {
                                     settings.save();
@@ -575,9 +448,9 @@ impl SettingsWindow {
                         });
                     });
 
-                    ui.add_space(12.0);
+                    ui.add_space(10.0);
 
-                    // 3. Save Folder Card (aligned to the same 186px right column)
+                    // 3. Save Folder Card
                     m3_card(ui, &theme, |ui| {
                         ui.horizontal(|ui| {
                             ui.label(
@@ -586,12 +459,19 @@ impl SettingsWindow {
                                     .color(theme.on_surface),
                             );
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                if m3_pill_btn(ui, t.settings_choose, true, &theme) {
-                                    if let Some(dir) = pick_folder_dialog() {
-                                        settings.save_dir = dir;
-                                        settings.save();
-                                        updated = true;
-                                    }
+                                if m3_pill_btn(
+                                    ui,
+                                    t.settings_choose,
+                                    !self.picking_folder,
+                                    &theme,
+                                ) && !self.picking_folder
+                                {
+                                    self.picking_folder = true;
+                                    let proxy = self.event_proxy.clone();
+                                    std::thread::spawn(move || {
+                                        let dir = pick_folder_dialog();
+                                        let _ = proxy.send_event(AppEvent::FolderPicked(dir));
+                                    });
                                 }
                             });
                         });
@@ -627,15 +507,29 @@ impl SettingsWindow {
                         });
                     });
 
-                    ui.add_space(12.0);
+                    ui.add_space(10.0);
 
                     // 4. Hotkeys Card
                     m3_card(ui, &theme, |ui| {
-                        ui.label(
-                            egui::RichText::new(t.settings_hotkeys)
-                                .size(13.5)
-                                .color(theme.on_surface),
-                        );
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new(t.settings_hotkeys)
+                                    .size(13.5)
+                                    .color(theme.on_surface),
+                            );
+                            if let Some((warn, _)) = &self.hotkey_warning {
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        ui.label(
+                                            egui::RichText::new(warn)
+                                                .size(11.5)
+                                                .color(egui::Color32::from_rgb(255, 130, 130)),
+                                        );
+                                    },
+                                );
+                            }
+                        });
                         ui.add_space(10.0);
 
                         hotkey_row(
@@ -645,7 +539,10 @@ impl SettingsWindow {
                             self.recording == Some(HotkeySlot::Fullscreen),
                             t.hk_press,
                             &theme,
-                            || self.recording = Some(HotkeySlot::Fullscreen),
+                            || {
+                                self.hotkey_warning = None;
+                                self.recording = Some(HotkeySlot::Fullscreen);
+                            },
                         );
                         ui.add_space(8.0);
                         hotkey_row(
@@ -655,7 +552,10 @@ impl SettingsWindow {
                             self.recording == Some(HotkeySlot::Area),
                             t.hk_press,
                             &theme,
-                            || self.recording = Some(HotkeySlot::Area),
+                            || {
+                                self.hotkey_warning = None;
+                                self.recording = Some(HotkeySlot::Area);
+                            },
                         );
                         ui.add_space(8.0);
                         hotkey_row(
@@ -665,7 +565,10 @@ impl SettingsWindow {
                             self.recording == Some(HotkeySlot::Window),
                             t.hk_press,
                             &theme,
-                            || self.recording = Some(HotkeySlot::Window),
+                            || {
+                                self.hotkey_warning = None;
+                                self.recording = Some(HotkeySlot::Window);
+                            },
                         );
                         ui.add_space(8.0);
                         hotkey_row(
@@ -675,12 +578,194 @@ impl SettingsWindow {
                             self.recording == Some(HotkeySlot::LiveDraw),
                             t.hk_press,
                             &theme,
-                            || self.recording = Some(HotkeySlot::LiveDraw),
+                            || {
+                                self.hotkey_warning = None;
+                                self.recording = Some(HotkeySlot::LiveDraw);
+                            },
                         );
+
+                        let muted = egui::Color32::from_rgba_unmultiplied(
+                            theme.on_surface.r(),
+                            theme.on_surface.g(),
+                            theme.on_surface.b(),
+                            175,
+                        );
+                        if cfg!(target_os = "linux")
+                            && std::env::var("XDG_SESSION_TYPE").ok().as_deref() == Some("wayland")
+                        {
+                            ui.add_space(8.0);
+                            ui.label(
+                                egui::RichText::new(t.wayland_hotkeys_note)
+                                    .size(11.0)
+                                    .color(muted),
+                            );
+                        }
+                    });
+
+                    ui.add_space(10.0);
+
+                    // 5. Updates & Diagnostics Card
+                    m3_card(ui, &theme, |ui| {
+                        let muted = egui::Color32::from_rgba_unmultiplied(
+                            theme.on_surface.r(),
+                            theme.on_surface.g(),
+                            theme.on_surface.b(),
+                            175,
+                        );
+                        let (status_text, status_col, hover_err) = match &self.update_state {
+                            UpdateState::Idle => (
+                                format!("v{}", env!("CARGO_PKG_VERSION")),
+                                muted,
+                                None,
+                            ),
+                            UpdateState::Checking => (
+                                t.update_checking.to_string(),
+                                muted,
+                                None,
+                            ),
+                            UpdateState::UpToDate => (
+                                format!("{} (v{})", t.update_up_to_date, env!("CARGO_PKG_VERSION")),
+                                theme.accent,
+                                None,
+                            ),
+                            UpdateState::Available(info) => (
+                                format!("{}: v{}", t.update_available, info.version),
+                                theme.accent,
+                                Some(info.html_url.clone()),
+                            ),
+                            UpdateState::Downloading(ver) => (
+                                format!("{} v{ver}", t.update_downloading),
+                                theme.accent,
+                                None,
+                            ),
+                            UpdateState::Installed(ver) => (
+                                format!("{}: v{ver}", t.update_available),
+                                theme.accent,
+                                None,
+                            ),
+                            UpdateState::OpenedManual(ver) => (
+                                format!("{} (v{ver})", t.update_opened),
+                                theme.accent,
+                                None,
+                            ),
+                            UpdateState::Failed(err) => (
+                                t.update_failed.to_string(),
+                                egui::Color32::from_rgb(255, 130, 130),
+                                Some(err.clone()),
+                            ),
+                        };
+
+                        ui.horizontal(|ui| {
+                            ui.vertical(|ui| {
+                                ui.label(
+                                    egui::RichText::new(format!(
+                                        "{}  v{}",
+                                        t.settings_updates,
+                                        env!("CARGO_PKG_VERSION")
+                                    ))
+                                    .size(13.5)
+                                    .color(theme.on_surface),
+                                );
+                                ui.add_space(2.0);
+                                let clickable_link = matches!(
+                                    self.update_state,
+                                    UpdateState::Available(_) | UpdateState::Failed(_)
+                                );
+                                let status_resp = ui.add(
+                                    egui::Label::new(
+                                        egui::RichText::new(status_text)
+                                            .size(11.5)
+                                            .color(status_col),
+                                    )
+                                    .sense(if clickable_link {
+                                        egui::Sense::click()
+                                    } else {
+                                        egui::Sense::hover()
+                                    }),
+                                );
+                                if clickable_link {
+                                    let resp = if let Some(tip) = hover_err {
+                                        status_resp
+                                            .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                            .on_hover_text(tip)
+                                    } else {
+                                        status_resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+                                    };
+                                    if resp.clicked() {
+                                        crate::updater::open_releases_page();
+                                    }
+                                } else if let Some(tip) = hover_err {
+                                    status_resp.on_hover_text(tip);
+                                }
+                            });
+
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                if m3_sized_pill_btn(
+                                    ui,
+                                    74.0,
+                                    t.settings_open_log,
+                                    false,
+                                    true,
+                                    &theme,
+                                ) {
+                                    diagnostics::open_log_dir();
+                                }
+                                ui.add_space(8.0);
+                                let busy = matches!(
+                                    self.update_state,
+                                    UpdateState::Checking | UpdateState::Downloading(_)
+                                );
+                                match &self.update_state {
+                                    UpdateState::Available(info) => {
+                                        if m3_sized_pill_btn(
+                                            ui,
+                                            118.0,
+                                            t.update_install,
+                                            true,
+                                            true,
+                                            &theme,
+                                        ) {
+                                            self.update_state =
+                                                UpdateState::Downloading(info.version.clone());
+                                            let _ = self
+                                                .event_proxy
+                                                .send_event(AppEvent::TriggerUpdateInstall);
+                                        }
+                                    }
+                                    _ => {
+                                        let btn_text = if matches!(
+                                            self.update_state,
+                                            UpdateState::Downloading(_)
+                                        ) {
+                                            t.update_downloading
+                                        } else if matches!(self.update_state, UpdateState::Checking)
+                                        {
+                                            t.update_checking
+                                        } else {
+                                            t.update_check
+                                        };
+                                        if m3_sized_pill_btn(
+                                            ui,
+                                            118.0,
+                                            btn_text,
+                                            false,
+                                            !busy,
+                                            &theme,
+                                        ) && !busy
+                                        {
+                                            self.update_state = UpdateState::Checking;
+                                            let _ = self
+                                                .event_proxy
+                                                .send_event(AppEvent::TriggerUpdateCheck);
+                                        }
+                                    }
+                                }
+                            });
+                        });
                     });
                 });
 
-            // Dropdown list overlay for 15 languages
+            // Language dropdown overlay (10 translated languages)
             let lang_pop_t = spring_animate(
                 ctx,
                 egui::Id::new("lang_drop_anim"),
@@ -699,51 +784,18 @@ impl SettingsWindow {
                     .fixed_pos(drop_pos)
                     .order(egui::Order::Foreground)
                     .show(ctx, |ui| {
-                        egui::Frame::NONE
-                            .fill(theme.surface_container)
-                            .stroke(Stroke::new(1.2_f32, theme.accent))
-                            .corner_radius(CornerRadius::same(8))
-                            .inner_margin(egui::Margin::same(6))
-                            .show(ui, |ui| {
-                                ui.set_width(dropdown_anchor.width() - 12.0);
-                                egui::ScrollArea::vertical()
-                                    .max_height(240.0)
-                                    .show(ui, |ui| {
-                                        ui.spacing_mut().item_spacing.y = 3.0;
-                                        for lang in Language::ALL {
-                                            let selected = settings.language == lang;
-                                            let (r, resp) = ui.allocate_exact_size(
-                                                Vec2::new(ui.available_width(), 28.0),
-                                                egui::Sense::click(),
-                                            );
-                                            let bg = if selected {
-                                                theme.accent
-                                            } else if resp.hovered() {
-                                                theme.surface_container_high
-                                            } else {
-                                                egui::Color32::TRANSPARENT
-                                            };
-                                            ui.painter().rect_filled(r, 6.0, bg);
-                                            ui.painter().text(
-                                                Pos2::new(r.left() + 10.0, r.center().y),
-                                                egui::Align2::LEFT_CENTER,
-                                                lang.label(),
-                                                egui::FontId::proportional(13.0),
-                                                if selected {
-                                                    theme.on_accent
-                                                } else {
-                                                    theme.on_surface
-                                                },
-                                            );
-                                            if resp.clicked() {
-                                                settings.language = lang;
-                                                settings.save();
-                                                self.lang_dropdown_open = false;
-                                                updated = true;
-                                            }
-                                        }
-                                    });
-                            });
+                        dropdown_popup_frame(ui, dropdown_anchor.width() - 12.0, &theme, |ui| {
+                            for lang in Language::ALL {
+                                let selected = settings.language == lang;
+                                if dropdown_item(ui, lang.label(), 13.0, selected, &theme) {
+                                    settings.language = lang;
+                                    settings.save();
+                                    self.lang_dropdown_open = false;
+                                    updated = true;
+                                    lang_changed = true;
+                                }
+                            }
+                        });
                     });
                 lang_popup_rect = area_resp.response.rect;
             }
@@ -766,56 +818,21 @@ impl SettingsWindow {
                     .fixed_pos(drop_pos)
                     .order(egui::Order::Foreground)
                     .show(ctx, |ui| {
-                        egui::Frame::NONE
-                            .fill(theme.surface_container)
-                            .stroke(Stroke::new(1.2_f32, theme.accent))
-                            .corner_radius(CornerRadius::same(8))
-                            .inner_margin(egui::Margin::same(6))
-                            .show(ui, |ui| {
-                                ui.set_width(font_anchor.width() - 12.0);
-                                egui::ScrollArea::vertical()
-                                    .max_height(240.0)
-                                    .show(ui, |ui| {
-                                        ui.spacing_mut().item_spacing.y = 3.0;
-                                        for tf in TextFont::ALL {
-                                            let selected = settings.text_font == tf;
-                                            let (r, resp) = ui.allocate_exact_size(
-                                                Vec2::new(ui.available_width(), 28.0),
-                                                egui::Sense::click(),
-                                            );
-                                            let bg = if selected {
-                                                theme.accent
-                                            } else if resp.hovered() {
-                                                theme.surface_container_high
-                                            } else {
-                                                egui::Color32::TRANSPARENT
-                                            };
-                                            ui.painter().rect_filled(r, 6.0, bg);
-                                            ui.painter().text(
-                                                Pos2::new(r.left() + 10.0, r.center().y),
-                                                egui::Align2::LEFT_CENTER,
-                                                tf.label(),
-                                                egui::FontId::proportional(12.5),
-                                                if selected {
-                                                    theme.on_accent
-                                                } else {
-                                                    theme.on_surface
-                                                },
-                                            );
-                                            if resp.clicked() {
-                                                settings.text_font = tf;
-                                                settings.save();
-                                                self.font_dropdown_open = false;
-                                                updated = true;
-                                            }
-                                        }
-                                    });
-                            });
+                        dropdown_popup_frame(ui, font_anchor.width() - 12.0, &theme, |ui| {
+                            for tf in TextFont::ALL {
+                                let selected = settings.text_font == tf;
+                                if dropdown_item(ui, tf.label(), 12.5, selected, &theme) {
+                                    settings.text_font = tf;
+                                    settings.save();
+                                    self.font_dropdown_open = false;
+                                    updated = true;
+                                }
+                            }
+                        });
                     });
                 font_popup_rect = area_resp.response.rect;
             }
 
-            // Close any open dropdown when left-clicking anywhere outside it
             if let Some(click_pos) = ctx.input(|i| {
                 if i.pointer.primary_clicked() {
                     i.pointer.interact_pos()
@@ -841,43 +858,33 @@ impl SettingsWindow {
             }
         });
 
-        self.egui_state
-            .handle_platform_output(&self.window, full_output.platform_output);
+        if lang_changed {
+            let t = Strings::for_lang(settings.language);
+            self.gl_win.window.set_title(&format!(
+                "ShotCraft v{} — {}",
+                env!("CARGO_PKG_VERSION"),
+                t.settings_title
+            ));
+        }
 
-        let clipped = self
-            .egui_ctx
-            .tessellate(full_output.shapes, full_output.pixels_per_point);
-
-        let size = self.window.inner_size();
-        let clear_col = ThemeColors::from_positions(settings.bg_color_pos, settings.accent_color_pos).surface;
-        unsafe {
-            use glow::HasContext;
-            self.gl.viewport(0, 0, size.width as i32, size.height as i32);
-            self.gl.clear_color(
+        let clear_col =
+            ThemeColors::from_positions(settings.bg_color_pos, settings.accent_color_pos).surface;
+        let needs_repaint = self.gl_win.paint_frame(
+            [
                 clear_col.r() as f32 / 255.0,
                 clear_col.g() as f32 / 255.0,
                 clear_col.b() as f32 / 255.0,
                 1.0,
-            );
-            self.gl.clear(glow::COLOR_BUFFER_BIT);
-        }
-
-        self.egui_painter.paint_and_update_textures(
-            [size.width, size.height],
-            full_output.pixels_per_point,
-            &clipped,
-            &full_output.textures_delta,
+            ],
+            full_output,
         );
-        let _ = self.gl_surface.swap_buffers(&self.gl_context);
 
         if updated
             || self.recording.is_some()
-            || full_output
-                .viewport_output
-                .values()
-                .any(|v| v.repaint_delay.is_zero())
+            || self.hotkey_warning.is_some()
+            || needs_repaint
         {
-            self.window.request_redraw();
+            self.gl_win.window.request_redraw();
         }
 
         if updated {
@@ -888,11 +895,112 @@ impl SettingsWindow {
     }
 }
 
-impl Drop for SettingsWindow {
-    fn drop(&mut self) {
-        let _ = self.gl_context.make_current(&self.gl_surface);
-        self.egui_painter.destroy();
-    }
+fn draw_dropdown_trigger(
+    ui: &mut egui::Ui,
+    label: &str,
+    font_size: f32,
+    open: bool,
+    theme: &ThemeColors,
+) -> (Rect, egui::Response) {
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(186.0, 30.0), egui::Sense::click());
+    let scale = spring_scale(
+        ui.ctx(),
+        resp.id,
+        resp.hovered(),
+        resp.is_pointer_button_down_on(),
+    );
+    let draw_rect = Rect::from_center_size(rect.center(), rect.size() * scale);
+    let r = morph_radius(
+        ui.ctx(),
+        resp.id,
+        draw_rect.height(),
+        open || resp.is_pointer_button_down_on(),
+    );
+    ui.painter().rect_filled(
+        draw_rect,
+        r,
+        if open {
+            theme.accent
+        } else {
+            theme.surface_container_high
+        },
+    );
+    ui.painter().rect_stroke(
+        draw_rect,
+        r,
+        Stroke::new(
+            1.0_f32,
+            if resp.hovered() && !open {
+                theme.accent
+            } else {
+                theme.outline
+            },
+        ),
+        egui::StrokeKind::Inside,
+    );
+    ui.painter().text(
+        draw_rect.center(),
+        egui::Align2::CENTER_CENTER,
+        label,
+        egui::FontId::proportional(font_size),
+        if open {
+            theme.on_accent
+        } else {
+            theme.on_surface
+        },
+    );
+    (rect, resp)
+}
+
+fn dropdown_popup_frame(
+    ui: &mut egui::Ui,
+    width: f32,
+    theme: &ThemeColors,
+    add_items: impl FnOnce(&mut egui::Ui),
+) {
+    egui::Frame::NONE
+        .fill(theme.surface_container)
+        .stroke(Stroke::new(1.2_f32, theme.accent))
+        .corner_radius(CornerRadius::same(8))
+        .inner_margin(egui::Margin::same(6))
+        .show(ui, |ui| {
+            ui.set_width(width);
+            egui::ScrollArea::vertical().max_height(240.0).show(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = 3.0;
+                add_items(ui);
+            });
+        });
+}
+
+fn dropdown_item(
+    ui: &mut egui::Ui,
+    label: &str,
+    font_size: f32,
+    selected: bool,
+    theme: &ThemeColors,
+) -> bool {
+    let (r, resp) =
+        ui.allocate_exact_size(Vec2::new(ui.available_width(), 28.0), egui::Sense::click());
+    let bg = if selected {
+        theme.accent
+    } else if resp.hovered() {
+        theme.surface_container_high
+    } else {
+        egui::Color32::TRANSPARENT
+    };
+    ui.painter().rect_filled(r, 6.0, bg);
+    ui.painter().text(
+        Pos2::new(r.left() + 10.0, r.center().y),
+        egui::Align2::LEFT_CENTER,
+        label,
+        egui::FontId::proportional(font_size),
+        if selected {
+            theme.on_accent
+        } else {
+            theme.on_surface
+        },
+    );
+    resp.clicked()
 }
 
 fn angle_step_widget(
@@ -901,6 +1009,7 @@ fn angle_step_widget(
     editing: &mut bool,
     buf: &mut String,
     drag_accum: &mut f32,
+    hint: &str,
     theme: &ThemeColors,
 ) -> bool {
     const PRESETS: [u16; 9] = [1, 2, 5, 10, 15, 30, 45, 60, 90];
@@ -945,7 +1054,8 @@ fn angle_step_widget(
         return changed;
     }
 
-    let (rect, resp) = ui.allocate_exact_size(Vec2::new(186.0, 30.0), egui::Sense::click_and_drag());
+    let (rect, resp) =
+        ui.allocate_exact_size(Vec2::new(186.0, 30.0), egui::Sense::click_and_drag());
     let scale = spring_scale(
         ui.ctx(),
         resp.id,
@@ -1001,18 +1111,22 @@ fn angle_step_widget(
         r,
         Stroke::new(
             1.0_f32,
-            if resp.hovered() { theme.accent } else { theme.outline },
+            if resp.hovered() {
+                theme.accent
+            } else {
+                theme.outline
+            },
         ),
         egui::StrokeKind::Inside,
     );
     ui.painter().text(
         draw_rect.center(),
         egui::Align2::CENTER_CENTER,
-        format!("<  {} deg  >", *deg),
+        format!("<  {}°  >", *deg),
         egui::FontId::proportional(12.5),
         fg,
     );
-    resp.on_hover_text("Click to type (1-90) or drag left/right (1, 2, 5, 10, 15, 30, 45, 60, 90)");
+    resp.on_hover_text(hint);
     changed
 }
 
@@ -1038,15 +1152,45 @@ fn m3_card(ui: &mut egui::Ui, theme: &ThemeColors, add_contents: impl FnOnce(&mu
 }
 
 fn m3_pill_btn(ui: &mut egui::Ui, text: &str, primary: bool, theme: &ThemeColors) -> bool {
-    let (rect, resp) = ui.allocate_exact_size(Vec2::new(186.0, 30.0), egui::Sense::click());
-    let hovered = resp.hovered();
-    let pressed = resp.is_pointer_button_down_on();
+    m3_sized_pill_btn(ui, 186.0, text, primary, true, theme)
+}
+
+fn m3_sized_pill_btn(
+    ui: &mut egui::Ui,
+    width: f32,
+    text: &str,
+    primary: bool,
+    enabled: bool,
+    theme: &ThemeColors,
+) -> bool {
+    let sense = if enabled {
+        egui::Sense::click()
+    } else {
+        egui::Sense::hover()
+    };
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, 30.0), sense);
+    let hovered = enabled && resp.hovered();
+    let pressed = enabled && resp.is_pointer_button_down_on();
     let scale = spring_scale(ui.ctx(), resp.id, hovered, pressed);
     let draw_rect = Rect::from_center_size(rect.center(), rect.size() * scale);
     let r = morph_radius(ui.ctx(), resp.id, draw_rect.height(), primary || pressed);
-    let (bg, fg) = if primary {
+    let (bg, fg) = if !enabled {
         (
-            if hovered { theme.accent_hover } else { theme.accent },
+            theme.surface_container_high,
+            egui::Color32::from_rgba_unmultiplied(
+                theme.on_surface.r(),
+                theme.on_surface.g(),
+                theme.on_surface.b(),
+                140,
+            ),
+        )
+    } else if primary {
+        (
+            if hovered {
+                theme.accent_hover
+            } else {
+                theme.accent
+            },
             theme.on_accent,
         )
     } else {
@@ -1071,7 +1215,7 @@ fn m3_pill_btn(ui: &mut egui::Ui, text: &str, primary: bool, theme: &ThemeColors
         egui::FontId::proportional(12.5),
         fg,
     );
-    resp.clicked()
+    enabled && resp.clicked()
 }
 
 fn hotkey_row(
@@ -1096,7 +1240,8 @@ fn hotkey_row(
             } else {
                 (theme.surface_container_high, theme.accent)
             };
-            let (rect, resp) = ui.allocate_exact_size(Vec2::new(186.0, 30.0), egui::Sense::click());
+            let (rect, resp) =
+                ui.allocate_exact_size(Vec2::new(186.0, 30.0), egui::Sense::click());
             let scale = spring_scale(
                 ui.ctx(),
                 resp.id,

@@ -10,7 +10,6 @@ use crate::material::draw_rounded_texture_uv;
 use crate::settings::TextFont;
 
 pub const ROBOTO_FONT_BYTES: &[u8] = include_bytes!("../assets/Roboto-Medium.ttf");
-pub const GOST_TYPE_AU_BYTES: &[u8] = include_bytes!("../assets/GOST_Type_AU.ttf");
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tool {
@@ -78,19 +77,18 @@ impl TextPlacement {
         if d.length_sq() < 16.0 {
             return Self::LeftTop;
         }
-        // Angle in [-PI, PI], quantize to 8 sectors of 45 deg
         let sector = (d.y.atan2(d.x) / std::f32::consts::FRAC_PI_4)
             .round()
             .rem_euclid(8.0) as i32;
         match sector {
-            0 => Self::LeftCenter,   // dragged Right
-            1 => Self::LeftTop,      // dragged Down-Right
-            2 => Self::CenterTop,    // dragged Down
-            3 => Self::RightTop,     // dragged Down-Left
-            4 => Self::RightCenter,  // dragged Left
-            5 => Self::RightBottom,  // dragged Up-Left
-            6 => Self::CenterBottom, // dragged Up
-            _ => Self::LeftBottom,   // dragged Up-Right (7)
+            0 => Self::LeftCenter,
+            1 => Self::LeftTop,
+            2 => Self::CenterTop,
+            3 => Self::RightTop,
+            4 => Self::RightCenter,
+            5 => Self::RightBottom,
+            6 => Self::CenterBottom,
+            _ => Self::LeftBottom,
         }
     }
 
@@ -189,6 +187,7 @@ pub enum Annotation {
     Blur {
         rect: Rect,
         radius: f32,
+        pixelate: bool,
     },
 }
 
@@ -321,6 +320,79 @@ impl Annotation {
         }
     }
 
+    pub fn scale_coords(&mut self, factor: f32) {
+        let sc = |p: &mut Pos2| {
+            p.x *= factor;
+            p.y *= factor;
+        };
+        match self {
+            Self::Pen {
+                points, thickness, ..
+            }
+            | Self::Marker {
+                points, thickness, ..
+            } => {
+                for pt in points {
+                    sc(pt);
+                }
+                *thickness *= factor;
+            }
+            Self::Line {
+                start,
+                end,
+                thickness,
+                ..
+            }
+            | Self::Arrow {
+                start,
+                end,
+                thickness,
+                ..
+            } => {
+                sc(start);
+                sc(end);
+                *thickness *= factor;
+            }
+            Self::Text {
+                pos,
+                size,
+                arrow_to,
+                thickness,
+                box_size,
+                ..
+            } => {
+                sc(pos);
+                *size *= factor;
+                *thickness *= factor;
+                if let Some(t) = arrow_to {
+                    sc(t);
+                }
+                if let Some(bs) = box_size {
+                    *bs *= factor;
+                }
+            }
+            Self::Ellipse {
+                rect, thickness, ..
+            }
+            | Self::Rect {
+                rect, thickness, ..
+            } => {
+                sc(&mut rect.min);
+                sc(&mut rect.max);
+                *thickness *= factor;
+            }
+            Self::Step { pos, radius, .. } => {
+                sc(pos);
+                *radius *= factor;
+            }
+            Self::Blur { rect, radius, .. } => {
+                sc(&mut rect.min);
+                sc(&mut rect.max);
+                *radius *= factor;
+            }
+        }
+    }
+
     /// Control handles: 2 endpoints for Line/Arrow, 4 corners for Rect/Ellipse/Blur/Text (+ arrow tip for Text callout).
     pub fn control_points(&self) -> Vec<Pos2> {
         match self {
@@ -411,7 +483,6 @@ impl Annotation {
                 let Some(anchor) = corner(old_box, handle_idx) else {
                     return;
                 };
-                // Allow free 2D resize (width & height); keep font size constant and wrap text inside
                 let new_w = ((new_pos.x - anchor.x).abs() - 8.0).max(36.0);
                 let new_h = ((new_pos.y - anchor.y).abs() - 8.0).max(*size * 1.25);
                 *box_size = Some(Vec2::new(new_w, new_h));
@@ -478,7 +549,9 @@ fn smooth_chaikin(pts: &[Pos2]) -> Vec<Pos2> {
             next.push(Pos2::new(p0.x * 0.75 + p1.x * 0.25, p0.y * 0.75 + p1.y * 0.25));
             next.push(Pos2::new(p0.x * 0.25 + p1.x * 0.75, p0.y * 0.25 + p1.y * 0.75));
         }
-        next.push(*cur.last().unwrap());
+        if let Some(&last) = cur.last() {
+            next.push(last);
+        }
         cur = next;
     }
     cur
@@ -533,7 +606,6 @@ pub fn wrap_text_lines(
             let candidate = format!("{cur}{word}");
             if cur.is_empty() || measure_line_width(candidate.trim_end(), size, tf) <= limit {
                 if measure_line_width(word.trim_end(), size, tf) > limit && cur.is_empty() {
-                    // Single long word exceeds limit: break by character
                     let mut chunk = String::new();
                     for ch in word.chars() {
                         let next = format!("{chunk}{ch}");
@@ -587,6 +659,33 @@ pub fn wrap_text_lines(
     (out_lines, Vec2::new(box_w, box_h))
 }
 
+/// Compute box rect, tight text-content rect, wrapped lines, and content size in a single pass.
+pub fn text_box_and_content_rects(
+    pos: Pos2,
+    text: &str,
+    size: f32,
+    placement: TextPlacement,
+    tf: TextFont,
+    box_size: Option<Vec2>,
+) -> (Rect, Rect, Vec<String>, Vec2) {
+    let wrap_w = box_size.map(|s| s.x);
+    let (lines, measured_sz) = wrap_text_lines(text, size, tf, wrap_w);
+    let final_w = box_size.map_or(measured_sz.x, |s| s.x.max(24.0));
+    let final_h = box_size.map_or(measured_sz.y, |s| s.y.max(measured_sz.y));
+    let box_r = placement.box_rect(pos, final_w, final_h);
+
+    let content_w = lines
+        .iter()
+        .map(|l| measure_line_width(l, size, tf))
+        .fold(0.0_f32, f32::max)
+        .max(20.0);
+    let content_h = measured_sz.y.max(size * 1.25);
+    let left = box_r.left() + (box_r.width() - content_w).max(0.0) * placement.h_align_frac();
+    let top = box_r.top() + (box_r.height() - content_h).max(0.0) * placement.v_align_frac();
+    let content_r = Rect::from_min_size(Pos2::new(left, top), Vec2::new(content_w, content_h));
+    (box_r, content_r, lines, Vec2::new(content_w, content_h))
+}
+
 pub fn text_box_rect(
     pos: Pos2,
     text: &str,
@@ -595,11 +694,7 @@ pub fn text_box_rect(
     tf: TextFont,
     box_size: Option<Vec2>,
 ) -> Rect {
-    let wrap_w = box_size.map(|s| s.x);
-    let (_, sz) = wrap_text_lines(text, size, tf, wrap_w);
-    let final_w = box_size.map_or(sz.x, |s| s.x.max(24.0));
-    let final_h = box_size.map_or(sz.y, |s| s.y.max(sz.y));
-    placement.box_rect(pos, final_w, final_h)
+    text_box_and_content_rects(pos, text, size, placement, tf, box_size).0
 }
 
 /// Tight bounding rect around the actual wrapped text glyphs (not the stretched virtual box).
@@ -611,28 +706,10 @@ pub fn text_content_rect(
     tf: TextFont,
     box_size: Option<Vec2>,
 ) -> Rect {
-    let wrap_w = box_size.map(|s| s.x);
-    let (lines, _) = wrap_text_lines(text, size, tf, wrap_w);
-    let box_r = text_box_rect(pos, text, size, placement, tf, box_size);
-    let line_height = if let Some(font) = font_for(tf) {
-        let scaled = font.as_scaled(PxScale::from(size * 1.15));
-        (scaled.height() + scaled.line_gap()).max(size * 1.25)
-    } else {
-        size * 1.25
-    };
-    let content_w = lines
-        .iter()
-        .map(|l| measure_line_width(l, size, tf))
-        .fold(0.0_f32, f32::max)
-        .max(20.0);
-    let content_h = lines.len().max(1) as f32 * line_height + 4.0;
-    let left = box_r.left() + (box_r.width() - content_w).max(0.0) * placement.h_align_frac();
-    let top = box_r.top() + (box_r.height() - content_h).max(0.0) * placement.v_align_frac();
-    Rect::from_min_size(Pos2::new(left, top), Vec2::new(content_w, content_h))
+    text_box_and_content_rects(pos, text, size, placement, tf, box_size).1
 }
 
-/// Snap the callout arrow anchor to the closest of the 8 magnetic points on `box_rect`
-/// (4 corners + 4 edge centers).
+/// Snap the callout arrow anchor to the closest of the 8 magnetic points on `box_rect`.
 pub fn callout_anchor(box_rect: Rect, target: Pos2) -> Pos2 {
     let p = box_rect.expand(6.0);
     let pts = [
@@ -660,44 +737,68 @@ fn dist_to_segment(p: Pos2, a: Pos2, b: Pos2) -> f32 {
     p.distance(a + ab * t)
 }
 
-/// Draw all annotations in exact creation Z-order, shifted by `offset` (for multi-monitor panes).
-/// `blur_patches` holds real baked blur textures (screen + earlier drawings) per Blur annotation index.
-/// `text_blur_tex` holds a 2x stronger blurred virtual-desktop texture for Text readability backdrop.
+/// Draw all annotations in exact creation Z-order onto a monitor pane.
+/// `offset` shifts global virtual coordinates by `-mon_offset`; `view_scale` adapts mixed-DPI panes.
+#[allow(clippy::too_many_arguments)]
 pub fn paint_annotations(
     painter: &egui::Painter,
     annotations: &[Annotation],
     selected_idx: Option<usize>,
+    defer_blur_idx: Option<usize>,
     offset: Vec2,
+    view_scale: f32,
     blur_patches: &HashMap<usize, TextureId>,
     text_blur_tex: Option<TextureId>,
     virtual_size: Vec2,
     accent: Color32,
 ) {
+    let map_pt = |p: Pos2| -> Pos2 {
+        let s = p + offset;
+        Pos2::new(s.x * view_scale, s.y * view_scale)
+    };
+    let map_rect = |r: Rect| -> Rect { Rect::from_min_max(map_pt(r.min), map_pt(r.max)) };
+
     for (idx, ann) in annotations.iter().enumerate() {
+        let skip_baked = defer_blur_idx == Some(idx);
         match ann {
-            Annotation::Blur { rect, .. } => {
-                let local_rect = rect.translate(offset);
-                if let Some(&patch_tex) = blur_patches.get(&idx) {
-                    painter.image(
-                        patch_tex,
-                        local_rect,
-                        Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
-                        Color32::WHITE,
-                    );
-                } else if let Some(tex) = text_blur_tex {
-                    // Fallback while dragging in-progress blur box
+            Annotation::Blur { rect, pixelate, .. } => {
+                let local_rect = map_rect(*rect);
+                if !skip_baked {
+                    if let Some(&patch_tex) = blur_patches.get(&idx) {
+                        painter.image(
+                            patch_tex,
+                            local_rect,
+                            Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+                            Color32::WHITE,
+                        );
+                        continue;
+                    }
+                }
+                if let Some(tex) = text_blur_tex {
                     let uv = Rect::from_min_max(
                         Pos2::new(
-                            (rect.min.x / virtual_size.x).clamp(0.0, 1.0),
-                            (rect.min.y / virtual_size.y).clamp(0.0, 1.0),
+                            (rect.min.x / virtual_size.x.max(1.0)).clamp(0.0, 1.0),
+                            (rect.min.y / virtual_size.y.max(1.0)).clamp(0.0, 1.0),
                         ),
                         Pos2::new(
-                            (rect.max.x / virtual_size.x).clamp(0.0, 1.0),
-                            (rect.max.y / virtual_size.y).clamp(0.0, 1.0),
+                            (rect.max.x / virtual_size.x.max(1.0)).clamp(0.0, 1.0),
+                            (rect.max.y / virtual_size.y.max(1.0)).clamp(0.0, 1.0),
                         ),
                     );
-                    painter.image(tex, local_rect, uv, Color32::from_rgba_unmultiplied(255, 255, 255, 220));
+                    painter.image(
+                        tex,
+                        local_rect,
+                        uv,
+                        Color32::from_rgba_unmultiplied(255, 255, 255, 220),
+                    );
                 } else {
+                    if *pixelate {
+                        painter.rect_filled(
+                            local_rect,
+                            4.0,
+                            Color32::from_rgba_unmultiplied(16, 22, 36, 130),
+                        );
+                    }
                     painter.rect_stroke(
                         local_rect,
                         4.0,
@@ -713,11 +814,8 @@ pub fn paint_annotations(
             } => {
                 let marker_col =
                     Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 105);
-                let width = *thickness * 3.8;
-                let smoothed: Vec<Pos2> = smooth_chaikin(points)
-                    .into_iter()
-                    .map(|p| p + offset)
-                    .collect();
+                let width = *thickness * 3.8 * view_scale;
+                let smoothed: Vec<Pos2> = smooth_chaikin(points).into_iter().map(map_pt).collect();
                 if smoothed.len() >= 2 {
                     painter.add(egui::Shape::line(
                         smoothed.clone(),
@@ -738,23 +836,18 @@ pub fn paint_annotations(
                 color,
                 thickness,
             } => {
-                let smoothed: Vec<Pos2> = smooth_chaikin(points)
-                    .into_iter()
-                    .map(|p| p + offset)
-                    .collect();
+                let lw = *thickness * view_scale;
+                let smoothed: Vec<Pos2> = smooth_chaikin(points).into_iter().map(map_pt).collect();
                 if smoothed.len() >= 2 {
-                    painter.add(egui::Shape::line(
-                        smoothed.clone(),
-                        Stroke::new(*thickness, *color),
-                    ));
+                    painter.add(egui::Shape::line(smoothed.clone(), Stroke::new(lw, *color)));
                     if let Some(&first) = smoothed.first() {
-                        painter.circle_filled(first, thickness * 0.5, *color);
+                        painter.circle_filled(first, lw * 0.5, *color);
                     }
                     if let Some(&last) = smoothed.last() {
-                        painter.circle_filled(last, thickness * 0.5, *color);
+                        painter.circle_filled(last, lw * 0.5, *color);
                     }
                 } else if let Some(&p) = smoothed.first() {
-                    painter.circle_filled(p, thickness * 0.5, *color);
+                    painter.circle_filled(p, lw * 0.5, *color);
                 }
             }
             Annotation::Line {
@@ -763,11 +856,12 @@ pub fn paint_annotations(
                 color,
                 thickness,
             } => {
-                let s = *start + offset;
-                let e = *end + offset;
-                painter.line_segment([s, e], Stroke::new(*thickness, *color));
-                painter.circle_filled(s, thickness * 0.5, *color);
-                painter.circle_filled(e, thickness * 0.5, *color);
+                let s = map_pt(*start);
+                let e = map_pt(*end);
+                let lw = *thickness * view_scale;
+                painter.line_segment([s, e], Stroke::new(lw, *color));
+                painter.circle_filled(s, lw * 0.5, *color);
+                painter.circle_filled(e, lw * 0.5, *color);
             }
             Annotation::Arrow {
                 start,
@@ -777,9 +871,9 @@ pub fn paint_annotations(
             } => {
                 draw_egui_arrow(
                     painter,
-                    *start + offset,
-                    *end + offset,
-                    Stroke::new(*thickness, *color),
+                    map_pt(*start),
+                    map_pt(*end),
+                    Stroke::new(*thickness * view_scale, *color),
                 );
             }
             Annotation::Text {
@@ -793,27 +887,21 @@ pub fn paint_annotations(
                 font,
                 box_size,
             } => {
-                let font_id =
-                    egui::FontId::new(*size, egui::FontFamily::Name(font.egui_family().into()));
-                let wrap_w = box_size.map(|s| s.x);
-                let (wrapped_lines, glyph_sz) = wrap_text_lines(text, *size, *font, wrap_w);
+                let font_id = egui::FontId::new(
+                    *size * view_scale,
+                    egui::FontFamily::Name(font.egui_family().into()),
+                );
+                let (box_r, _, wrapped_lines, measured_sz) =
+                    text_box_and_content_rects(*pos, text, *size, *placement, *font, *box_size);
                 let display_text = wrapped_lines.join("\n");
-                let galley = painter.layout_no_wrap(display_text.clone(), font_id.clone(), *color);
-                let content_w = galley.size().x.max(glyph_sz.x).max(20.0);
-                let content_h = galley.size().y.max(glyph_sz.y).max(*size * 1.25);
-                let box_w = box_size.map_or(content_w, |s| s.x.max(24.0));
-                let box_h = box_size.map_or(content_h, |s| s.y.max(content_h));
-                let box_r = placement.box_rect(*pos, box_w, box_h);
+                let unscaled_font =
+                    egui::FontId::new(*size, egui::FontFamily::Name(font.egui_family().into()));
+                let galley = painter.layout_no_wrap(display_text, unscaled_font, *color);
+                let actual_w = galley.size().x.max(measured_sz.x).max(20.0);
+                let content_h = galley.size().y.max(measured_sz.y).max(*size * 1.25);
 
-                // Tight blur strictly around the actual text letters, not the stretched virtual frame
                 let h_frac = placement.h_align_frac();
                 let v_frac = placement.v_align_frac();
-                let actual_w = galley.size().x.max(
-                    wrapped_lines
-                        .iter()
-                        .map(|l| measure_line_width(l, *size, *font))
-                        .fold(0.0_f32, f32::max),
-                ).max(20.0);
                 let text_left = box_r.left() + (box_r.width() - actual_w).max(0.0) * h_frac;
                 let text_top = box_r.top() + (box_r.height() - content_h).max(0.0) * v_frac;
                 let text_only_r = Rect::from_min_size(
@@ -821,19 +909,45 @@ pub fn paint_annotations(
                     Vec2::new(actual_w, content_h),
                 );
                 let bg_global = text_only_r.expand(6.0);
-                let bg_local = bg_global.translate(offset);
+                let bg_local = map_rect(bg_global);
 
-                // 2x stronger blur backdrop behind text, baked with earlier annotations so lines aren't erased
-                if let Some(&patch_tex) = blur_patches.get(&idx) {
-                    draw_rounded_texture_uv(
-                        painter,
-                        patch_tex,
-                        bg_global.size(),
-                        Rect::from_min_size(Pos2::ZERO, bg_global.size()),
-                        bg_local,
-                        8.0,
-                        Color32::WHITE,
-                    );
+                if !skip_baked {
+                    if let Some(&patch_tex) = blur_patches.get(&idx) {
+                        draw_rounded_texture_uv(
+                            painter,
+                            patch_tex,
+                            bg_global.size(),
+                            Rect::from_min_size(Pos2::ZERO, bg_global.size()),
+                            bg_local,
+                            8.0 * view_scale,
+                            Color32::WHITE,
+                        );
+                    } else if let Some(tex) = text_blur_tex {
+                        draw_rounded_texture_uv(
+                            painter,
+                            tex,
+                            virtual_size,
+                            bg_global,
+                            bg_local,
+                            8.0 * view_scale,
+                            Color32::WHITE,
+                        );
+                    } else {
+                        painter.rect_filled(
+                            bg_local,
+                            8.0 * view_scale,
+                            Color32::from_rgba_unmultiplied(14, 18, 28, 210),
+                        );
+                        painter.rect_stroke(
+                            bg_local,
+                            8.0 * view_scale,
+                            Stroke::new(
+                                1.0_f32,
+                                Color32::from_rgba_unmultiplied(255, 255, 255, 38),
+                            ),
+                            egui::StrokeKind::Middle,
+                        );
+                    }
                 } else if let Some(tex) = text_blur_tex {
                     draw_rounded_texture_uv(
                         painter,
@@ -841,49 +955,43 @@ pub fn paint_annotations(
                         virtual_size,
                         bg_global,
                         bg_local,
-                        8.0,
+                        8.0 * view_scale,
                         Color32::WHITE,
                     );
                 } else {
                     painter.rect_filled(
                         bg_local,
-                        8.0,
+                        8.0 * view_scale,
                         Color32::from_rgba_unmultiplied(14, 18, 28, 210),
                     );
-                    painter.rect_stroke(
-                        bg_local,
-                        8.0,
-                        Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(255, 255, 255, 38)),
-                        egui::StrokeKind::Middle,
-                    );
                 }
+
                 if let Some(target) = arrow_to {
-                    let start = callout_anchor(box_r, *target) + offset;
+                    let start = map_pt(callout_anchor(box_r, *target));
                     draw_egui_arrow(
                         painter,
                         start,
-                        *target + offset,
-                        Stroke::new((*thickness * 0.85).max(2.0), *color),
+                        map_pt(*target),
+                        Stroke::new((*thickness * 0.85).max(2.0) * view_scale, *color),
                     );
                 }
-                let local_box = box_r.translate(offset);
-                let h_frac = placement.h_align_frac();
-                let v_frac = placement.v_align_frac();
+                let local_box = map_rect(box_r);
                 let align = match placement {
-                    TextPlacement::LeftTop | TextPlacement::LeftCenter | TextPlacement::LeftBottom => {
-                        egui::Align2::LEFT_TOP
-                    }
+                    TextPlacement::LeftTop
+                    | TextPlacement::LeftCenter
+                    | TextPlacement::LeftBottom => egui::Align2::LEFT_TOP,
                     TextPlacement::CenterTop | TextPlacement::CenterBottom => {
                         egui::Align2::CENTER_TOP
                     }
-                    TextPlacement::RightTop | TextPlacement::RightCenter | TextPlacement::RightBottom => {
-                        egui::Align2::RIGHT_TOP
-                    }
+                    TextPlacement::RightTop
+                    | TextPlacement::RightCenter
+                    | TextPlacement::RightBottom => egui::Align2::RIGHT_TOP,
                 };
                 let anchor_x = local_box.left() + local_box.width() * h_frac;
+                let local_content_h = content_h * view_scale;
                 let anchor_y =
-                    local_box.top() + (local_box.height() - content_h).max(0.0) * v_frac;
-                let line_step = content_h / wrapped_lines.len().max(1) as f32;
+                    local_box.top() + (local_box.height() - local_content_h).max(0.0) * v_frac;
+                let line_step = local_content_h / wrapped_lines.len().max(1) as f32;
                 for (li, line) in wrapped_lines.iter().enumerate() {
                     let tp = Pos2::new(anchor_x, anchor_y + li as f32 * line_step);
                     painter.text(
@@ -902,13 +1010,13 @@ pub fn paint_annotations(
                 thickness,
                 filled,
             } => {
-                let pts = ellipse_points(rect.translate(offset), 48);
+                let pts = ellipse_points(map_rect(*rect), 48);
                 if *filled {
                     painter.add(egui::Shape::convex_polygon(pts, *color, Stroke::NONE));
                 } else {
                     painter.add(egui::Shape::closed_line(
                         pts,
-                        Stroke::new(*thickness, *color),
+                        Stroke::new(*thickness * view_scale, *color),
                     ));
                 }
             }
@@ -918,15 +1026,15 @@ pub fn paint_annotations(
                 thickness,
                 filled,
             } => {
-                let cr = (*thickness * 1.2).clamp(4.0, 14.0);
-                let lrect = rect.translate(offset);
+                let cr = (*thickness * 1.2 * view_scale).clamp(4.0, 14.0);
+                let lrect = map_rect(*rect);
                 if *filled {
                     painter.rect_filled(lrect, cr, *color);
                 } else {
                     painter.rect_stroke(
                         lrect,
                         cr,
-                        Stroke::new(*thickness, *color),
+                        Stroke::new(*thickness * view_scale, *color),
                         egui::StrokeKind::Middle,
                     );
                 }
@@ -937,22 +1045,23 @@ pub fn paint_annotations(
                 color,
                 radius,
             } => {
-                let lpos = *pos + offset;
-                painter.circle_filled(lpos, *radius, *color);
-                painter.circle_stroke(lpos, *radius, Stroke::new(1.5_f32, Color32::WHITE));
+                let lpos = map_pt(*pos);
+                let rad = *radius * view_scale;
+                painter.circle_filled(lpos, rad, *color);
+                painter.circle_stroke(lpos, rad, Stroke::new(1.5_f32, Color32::WHITE));
                 let text_color = contrasting_fg(*color);
                 painter.text(
                     lpos,
                     egui::Align2::CENTER_CENTER,
                     number.to_string(),
-                    egui::FontId::proportional((*radius * 1.05).max(11.0)),
+                    egui::FontId::proportional((rad * 1.05).max(11.0)),
                     text_color,
                 );
             }
         }
 
         if selected_idx == Some(idx) {
-            let b = ann.bounding_rect().translate(offset).expand(4.0);
+            let b = map_rect(ann.bounding_rect()).expand(4.0);
             painter.rect_stroke(
                 b,
                 6.0,
@@ -960,7 +1069,7 @@ pub fn paint_annotations(
                 egui::StrokeKind::Outside,
             );
             for cp in ann.control_points() {
-                let lcp = cp + offset;
+                let lcp = map_pt(cp);
                 painter.circle_filled(lcp, 6.0, accent);
                 painter.circle_stroke(lcp, 6.0, Stroke::new(1.5_f32, Color32::WHITE));
             }
@@ -1018,21 +1127,33 @@ fn to_rgba(c: Color32, alpha: u8) -> Rgba<u8> {
     Rgba([c.r(), c.g(), c.b(), alpha])
 }
 
-/// Crop the captured screenshot to `selection` and rasterize all annotations in exact Z-order,
-/// so Blur blurs both the screen AND any earlier annotations underneath it!
+/// Crop the captured screenshot to `selection` and rasterize all annotations in exact Z-order.
 pub fn render_export(
     source: &RgbaImage,
     selection: Rect,
     scale_factor: f32,
     annotations: &[Annotation],
 ) -> RgbaImage {
+    if source.width() == 0 || source.height() == 0 {
+        return RgbaImage::new(1, 1);
+    }
     let img_w = source.width() as i32;
     let img_h = source.height() as i32;
 
-    let x0 = ((selection.min.x * scale_factor).round() as i32).clamp(0, img_w - 1);
-    let y0 = ((selection.min.y * scale_factor).round() as i32).clamp(0, img_h - 1);
-    let x1 = ((selection.max.x * scale_factor).round() as i32).clamp(x0 + 1, img_w);
-    let y1 = ((selection.max.y * scale_factor).round() as i32).clamp(y0 + 1, img_h);
+    let (x0, x1) = if img_w <= 1 {
+        (0, 1)
+    } else {
+        let s = ((selection.min.x * scale_factor).round() as i32).clamp(0, img_w - 1);
+        let e = ((selection.max.x * scale_factor).round() as i32).clamp(s + 1, img_w);
+        (s, e)
+    };
+    let (y0, y1) = if img_h <= 1 {
+        (0, 1)
+    } else {
+        let s = ((selection.min.y * scale_factor).round() as i32).clamp(0, img_h - 1);
+        let e = ((selection.max.y * scale_factor).round() as i32).clamp(s + 1, img_h);
+        (s, e)
+    };
 
     let out_w = (x1 - x0) as u32;
     let out_h = (y1 - y0) as u32;
@@ -1048,17 +1169,26 @@ pub fn render_export(
 
     for ann in annotations {
         match ann {
-            Annotation::Blur { rect, radius } => {
+            Annotation::Blur {
+                rect,
+                radius,
+                pixelate,
+            } => {
                 let (bx0, by0) = to_px(rect.min);
                 let (bx1, by1) = to_px(rect.max);
-                smooth_blur_region(
-                    &mut out,
-                    bx0 as i32,
-                    by0 as i32,
-                    bx1 as i32,
-                    by1 as i32,
-                    (*radius * scale_factor).round().clamp(3.0, 22.0) as i32,
-                );
+                if *pixelate {
+                    let block = ((*radius * 1.4).clamp(6.0, 28.0) * scale_factor).round() as i32;
+                    pixelate_region(&mut out, bx0 as i32, by0 as i32, bx1 as i32, by1 as i32, block);
+                } else {
+                    smooth_blur_region(
+                        &mut out,
+                        bx0 as i32,
+                        by0 as i32,
+                        bx1 as i32,
+                        by1 as i32,
+                        (*radius * scale_factor).round().clamp(3.0, 22.0) as i32,
+                    );
+                }
             }
             Annotation::Marker {
                 points,
@@ -1124,14 +1254,11 @@ pub fn render_export(
                 font,
                 box_size,
             } => {
-                let wrap_w = box_size.map(|s| s.x);
-                let (wrapped_lines, content_sz) = wrap_text_lines(text, *size, *font, wrap_w);
-                let box_r = text_box_rect(*pos, text, *size, *placement, *font, *box_size);
-                let text_only_r = text_content_rect(*pos, text, *size, *placement, *font, *box_size);
+                let (box_r, text_only_r, wrapped_lines, content_sz) =
+                    text_box_and_content_rects(*pos, text, *size, *placement, *font, *box_size);
                 let bg = text_only_r.expand(6.0);
                 let (bx0, by0) = to_px(bg.min);
                 let (bx1, by1) = to_px(bg.max);
-                // 2x stronger blur behind text for readability
                 smooth_blur_region(
                     &mut out,
                     bx0 as i32,
@@ -1240,7 +1367,8 @@ pub fn render_export(
                 );
                 raster_disc(&mut out, cx, cy, rad, to_rgba(*color, 255));
                 let fg = to_rgba(contrasting_fg(*color), 255);
-                raster_number(&mut out, cx, cy, *number, (*radius / 13.5) * scale_factor, fg);
+                let font_px = (*radius * 1.05).max(11.0) * scale_factor;
+                raster_number(&mut out, cx, cy, *number, font_px, fg);
             }
         }
     }
@@ -1252,11 +1380,9 @@ fn font_for(tf: TextFont) -> Option<&'static FontArc> {
     static CACHE: [OnceLock<Option<FontArc>>; 15] = [const { OnceLock::new() }; 15];
     let slot = CACHE.get(tf as usize)?;
     slot.get_or_init(|| match tf {
-        TextFont::GostTypeAU => FontArc::try_from_slice(GOST_TYPE_AU_BYTES).ok(),
         TextFont::Roboto => FontArc::try_from_slice(ROBOTO_FONT_BYTES).ok(),
         _ => tf
-            .system_path()
-            .and_then(|p| std::fs::read(p).ok())
+            .resolve_font_bytes()
             .and_then(|b| FontArc::try_from_vec(b).ok())
             .or_else(|| FontArc::try_from_slice(ROBOTO_FONT_BYTES).ok()),
     })
@@ -1317,6 +1443,7 @@ fn blend_pixel(img: &mut RgbaImage, x: u32, y: u32, src: Rgba<u8>, coverage: f32
     dst[3] = 255;
 }
 
+/// Fast bounding-strip mask rasterizer for semi-transparent Marker polylines (uniform alpha, O(Segments * Length)).
 fn raster_polyline_blended(
     img: &mut RgbaImage,
     points: &[Pos2],
@@ -1324,15 +1451,15 @@ fn raster_polyline_blended(
     radius: f32,
     color: Rgba<u8>,
 ) {
-    if points.is_empty() {
+    if points.is_empty() || img.width() == 0 || img.height() == 0 {
         return;
     }
     let w = img.width() as i32;
     let h = img.height() as i32;
     let mut min_x = w;
-    let mut max_x = 0;
+    let mut max_x = -1;
     let mut min_y = h;
-    let mut max_y = 0;
+    let mut max_y = -1;
     let px_pts: Vec<(f32, f32)> = points
         .iter()
         .map(|&p| {
@@ -1349,68 +1476,159 @@ fn raster_polyline_blended(
     max_x = max_x.clamp(0, w - 1);
     min_y = min_y.clamp(0, h - 1);
     max_y = max_y.clamp(0, h - 1);
+    if max_x < min_x || max_y < min_y {
+        return;
+    }
 
+    let mask_w = (max_x - min_x + 1) as usize;
+    let mask_h = (max_y - min_y + 1) as usize;
+    let mut mask = vec![0u8; mask_w * mask_h];
     let r2 = radius * radius;
-    for y in min_y..=max_y {
-        for x in min_x..=max_x {
-            let fx = x as f32 + 0.5;
+    let pad = (radius + 1.0).ceil() as i32;
+
+    let stamp_seg = |mask: &mut [u8], ax: f32, ay: f32, bx: f32, by: f32| {
+        let sx0 = ((ax.min(bx) as i32) - pad).clamp(min_x, max_x);
+        let sx1 = ((ax.max(bx) as i32) + pad).clamp(min_x, max_x);
+        let sy0 = ((ay.min(by) as i32) - pad).clamp(min_y, max_y);
+        let sy1 = ((ay.max(by) as i32) + pad).clamp(min_y, max_y);
+        let abx = bx - ax;
+        let aby = by - ay;
+        let len_sq = abx * abx + aby * aby;
+
+        for y in sy0..=sy1 {
+            let row_off = (y - min_y) as usize * mask_w;
             let fy = y as f32 + 0.5;
-            let hit = if px_pts.len() == 1 {
-                let dx = fx - px_pts[0].0;
-                let dy = fy - px_pts[0].1;
-                dx * dx + dy * dy <= r2
-            } else {
-                px_pts.windows(2).any(|seg| {
-                    let ax = seg[0].0;
-                    let ay = seg[0].1;
-                    let bx = seg[1].0;
-                    let by = seg[1].1;
-                    let abx = bx - ax;
-                    let aby = by - ay;
-                    let len_sq = abx * abx + aby * aby;
-                    let t = if len_sq < 1e-4 {
-                        0.0
-                    } else {
-                        (((fx - ax) * abx + (fy - ay) * aby) / len_sq).clamp(0.0, 1.0)
-                    };
-                    let dx = fx - (ax + abx * t);
-                    let dy = fy - (ay + aby * t);
-                    dx * dx + dy * dy <= r2
-                })
-            };
-            if hit {
-                blend_pixel(img, x as u32, y as u32, color, 1.0);
+            for x in sx0..=sx1 {
+                let fx = x as f32 + 0.5;
+                let t = if len_sq < 1e-4 {
+                    0.0
+                } else {
+                    (((fx - ax) * abx + (fy - ay) * aby) / len_sq).clamp(0.0, 1.0)
+                };
+                let dx = fx - (ax + abx * t);
+                let dy = fy - (ay + aby * t);
+                if dx * dx + dy * dy <= r2 {
+                    mask[row_off + (x - min_x) as usize] = 1;
+                }
+            }
+        }
+    };
+
+    if px_pts.len() == 1 {
+        stamp_seg(&mut mask, px_pts[0].0, px_pts[0].1, px_pts[0].0, px_pts[0].1);
+    } else {
+        for seg in px_pts.windows(2) {
+            stamp_seg(&mut mask, seg[0].0, seg[0].1, seg[1].0, seg[1].1);
+        }
+    }
+
+    for my in 0..mask_h {
+        let row_off = my * mask_w;
+        let iy = (min_y + my as i32) as u32;
+        for mx in 0..mask_w {
+            if mask[row_off + mx] != 0 {
+                blend_pixel(img, (min_x + mx as i32) as u32, iy, color, 1.0);
             }
         }
     }
 }
 
-/// Bake a real live blur patch for `blur_rect` including the screen AND all earlier annotations.
+/// Bake a real live blur or pixelate patch for `blur_rect` including the screen AND all earlier annotations.
 pub fn bake_blur_patch(
     virtual_source: &RgbaImage,
     blur_rect: Rect,
     scale_factor: f32,
     blur_radius: f32,
+    pixelate: bool,
     earlier: &[Annotation],
 ) -> egui::ColorImage {
     let mut img = render_export(virtual_source, blur_rect, scale_factor, earlier);
     let w = img.width() as i32;
     let h = img.height() as i32;
-    smooth_blur_region(
-        &mut img,
-        0,
-        0,
-        w,
-        h,
-        (blur_radius * scale_factor).round().clamp(3.0, 22.0) as i32,
-    );
+    if pixelate {
+        let block = ((blur_radius * 1.4).clamp(6.0, 28.0) * scale_factor).round() as i32;
+        pixelate_region(&mut img, 0, 0, w, h, block);
+    } else {
+        smooth_blur_region(
+            &mut img,
+            0,
+            0,
+            w,
+            h,
+            (blur_radius * scale_factor).round().clamp(3.0, 22.0) as i32,
+        );
+    }
     egui::ColorImage::from_rgba_unmultiplied([img.width() as usize, img.height() as usize], img.as_raw())
 }
 
-/// Gentle, smooth separable blur directly over any rendered content inside `[x0..x1, y0..y1]`.
+/// Irreversible mosaic pixelation over `[x0..x1, y0..y1]`.
+pub fn pixelate_region(
+    img: &mut RgbaImage,
+    x0: i32,
+    y0: i32,
+    x1: i32,
+    y1: i32,
+    block_size: i32,
+) {
+    let w = img.width() as i32;
+    let h = img.height() as i32;
+    if w == 0 || h == 0 {
+        return;
+    }
+    let x0 = x0.clamp(0, w);
+    let y0 = y0.clamp(0, h);
+    let x1 = x1.clamp(0, w);
+    let y1 = y1.clamp(0, h);
+    if x1 <= x0 || y1 <= y0 {
+        return;
+    }
+    let bs = block_size.clamp(4, 64);
+
+    let mut by = y0;
+    while by < y1 {
+        let ey = (by + bs).min(y1);
+        let mut bx = x0;
+        while bx < x1 {
+            let ex = (bx + bs).min(x1);
+            let mut rs = 0u64;
+            let mut gs = 0u64;
+            let mut bs_sum = 0u64;
+            let mut cnt = 0u64;
+            for py in by..ey {
+                for px in bx..ex {
+                    let p = img.get_pixel(px as u32, py as u32);
+                    rs += p[0] as u64;
+                    gs += p[1] as u64;
+                    bs_sum += p[2] as u64;
+                    cnt += 1;
+                }
+            }
+            if cnt > 0 {
+                let col = Rgba([
+                    (rs / cnt) as u8,
+                    (gs / cnt) as u8,
+                    (bs_sum / cnt) as u8,
+                    255,
+                ]);
+                for py in by..ey {
+                    for px in bx..ex {
+                        img.put_pixel(px as u32, py as u32, col);
+                    }
+                }
+            }
+            bx = ex;
+        }
+        by = ey;
+    }
+}
+
+/// 2-pass separable Gaussian-approximating blur over `[x0..x1, y0..y1]` in `O(W * H)`.
 pub fn smooth_blur_region(img: &mut RgbaImage, x0: i32, y0: i32, x1: i32, y1: i32, radius: i32) {
     let w = img.width() as i32;
     let h = img.height() as i32;
+    if w == 0 || h == 0 {
+        return;
+    }
     let x0 = x0.clamp(0, w);
     let y0 = y0.clamp(0, h);
     let x1 = x1.clamp(0, w);
@@ -1435,79 +1653,86 @@ pub fn smooth_blur_region(img: &mut RgbaImage, x0: i32, y0: i32, x1: i32, y1: i3
     let mut tmp = vec![[0f32; 3]; rw * rh];
     let r = radius.clamp(2, 22) as usize;
 
-    // O(W * H) horizontal sliding-window pass
-    for y in 0..rh {
-        let row = y * rw;
-        let mut rs = 0.0;
-        let mut gs = 0.0;
-        let mut bs = 0.0;
-        let mut cnt = 0.0;
-        for nx in 0..=r.min(rw - 1) {
-            let c = buf[row + nx];
-            rs += c[0];
-            gs += c[1];
-            bs += c[2];
-            cnt += 1.0;
-        }
-        for x in 0..rw {
-            tmp[row + x] = [rs / cnt, gs / cnt, bs / cnt];
-            let add_x = x + r + 1;
-            if add_x < rw {
-                let c = buf[row + add_x];
+    for _ in 0..2 {
+        for y in 0..rh {
+            let row = y * rw;
+            let mut rs = 0.0;
+            let mut gs = 0.0;
+            let mut bs = 0.0;
+            let mut cnt = 0.0;
+            for nx in 0..=r.min(rw - 1) {
+                let c = buf[row + nx];
                 rs += c[0];
                 gs += c[1];
                 bs += c[2];
                 cnt += 1.0;
             }
-            if x >= r {
-                let c = buf[row + x - r];
-                rs -= c[0];
-                gs -= c[1];
-                bs -= c[2];
-                cnt -= 1.0;
+            for x in 0..rw {
+                tmp[row + x] = [rs / cnt, gs / cnt, bs / cnt];
+                let add_x = x + r + 1;
+                if add_x < rw {
+                    let c = buf[row + add_x];
+                    rs += c[0];
+                    gs += c[1];
+                    bs += c[2];
+                    cnt += 1.0;
+                }
+                if x >= r {
+                    let c = buf[row + x - r];
+                    rs -= c[0];
+                    gs -= c[1];
+                    bs -= c[2];
+                    cnt -= 1.0;
+                }
+            }
+        }
+
+        for x in 0..rw {
+            let mut rs = 0.0;
+            let mut gs = 0.0;
+            let mut bs = 0.0;
+            let mut cnt = 0.0;
+            for ny in 0..=r.min(rh - 1) {
+                let c = tmp[ny * rw + x];
+                rs += c[0];
+                gs += c[1];
+                bs += c[2];
+                cnt += 1.0;
+            }
+            for y in 0..rh {
+                buf[y * rw + x] = [rs / cnt, gs / cnt, bs / cnt];
+                let add_y = y + r + 1;
+                if add_y < rh {
+                    let c = tmp[add_y * rw + x];
+                    rs += c[0];
+                    gs += c[1];
+                    bs += c[2];
+                    cnt += 1.0;
+                }
+                if y >= r {
+                    let c = tmp[(y - r) * rw + x];
+                    rs -= c[0];
+                    gs -= c[1];
+                    bs -= c[2];
+                    cnt -= 1.0;
+                }
             }
         }
     }
 
-    // O(W * H) vertical sliding-window pass
-    for x in 0..rw {
-        let mut rs = 0.0;
-        let mut gs = 0.0;
-        let mut bs = 0.0;
-        let mut cnt = 0.0;
-        for ny in 0..=r.min(rh - 1) {
-            let c = tmp[ny * rw + x];
-            rs += c[0];
-            gs += c[1];
-            bs += c[2];
-            cnt += 1.0;
-        }
-        for y in 0..rh {
+    for y in 0..rh {
+        for x in 0..rw {
+            let c = buf[y * rw + x];
             img.put_pixel(
                 (x0 + x as i32) as u32,
                 (y0 + y as i32) as u32,
                 Rgba([
-                    (rs / cnt).round().clamp(0.0, 255.0) as u8,
-                    (gs / cnt).round().clamp(0.0, 255.0) as u8,
-                    (bs / cnt).round().clamp(0.0, 255.0) as u8,
+                    c[0].round().clamp(0.0, 255.0) as u8,
+                    c[1].round().clamp(0.0, 255.0) as u8,
+                    c[2].round().clamp(0.0, 255.0) as u8,
                     255,
                 ]),
             );
-            let add_y = y + r + 1;
-            if add_y < rh {
-                let c = tmp[add_y * rw + x];
-                rs += c[0];
-                gs += c[1];
-                bs += c[2];
-                cnt += 1.0;
-            }
-            if y >= r {
-                let c = tmp[(y - r) * rw + x];
-                rs -= c[0];
-                gs -= c[1];
-                bs -= c[2];
-                cnt -= 1.0;
-            }
         }
     }
 }
@@ -1515,6 +1740,9 @@ pub fn smooth_blur_region(img: &mut RgbaImage, x0: i32, y0: i32, x1: i32, y1: i3
 fn raster_disc(img: &mut RgbaImage, cx: f32, cy: f32, radius: f32, color: Rgba<u8>) {
     let w = img.width() as i32;
     let h = img.height() as i32;
+    if w == 0 || h == 0 {
+        return;
+    }
     let r2 = radius * radius;
     let min_x = ((cx - radius - 1.0).floor() as i32).clamp(0, w - 1);
     let max_x = ((cx + radius + 1.0).ceil() as i32).clamp(0, w - 1);
@@ -1603,6 +1831,11 @@ fn raster_filled_rounded_rect(
     thickness: f32,
     color: Rgba<u8>,
 ) {
+    let iw = img.width() as i32;
+    let ih = img.height() as i32;
+    if iw == 0 || ih == 0 {
+        return;
+    }
     let lx = x0.min(x1);
     let rx = x0.max(x1);
     let ty = y0.min(y1);
@@ -1610,9 +1843,11 @@ fn raster_filled_rounded_rect(
     let w = rx - lx;
     let h = by - ty;
     let cr = (thickness * 1.2).clamp(4.0, 28.0).min(w * 0.45).min(h * 0.45);
+    let cx_min = lx + cr;
+    let cx_max = (rx - cr).max(cx_min);
+    let cy_min = ty + cr;
+    let cy_max = (by - cr).max(cy_min);
 
-    let iw = img.width() as i32;
-    let ih = img.height() as i32;
     let min_x = (lx.floor() as i32).clamp(0, iw - 1);
     let max_x = (rx.ceil() as i32).clamp(0, iw - 1);
     let min_y = (ty.floor() as i32).clamp(0, ih - 1);
@@ -1622,8 +1857,8 @@ fn raster_filled_rounded_rect(
         for x in min_x..=max_x {
             let fx = x as f32 + 0.5;
             let fy = y as f32 + 0.5;
-            let cx = fx.clamp(lx + cr, rx - cr);
-            let cy = fy.clamp(ty + cr, by - cr);
+            let cx = fx.clamp(cx_min, cx_max);
+            let cy = fy.clamp(cy_min, cy_max);
             let dx = fx - cx;
             let dy = fy - cy;
             if dx * dx + dy * dy <= cr * cr {
@@ -1641,6 +1876,11 @@ fn raster_filled_ellipse(
     y1: f32,
     color: Rgba<u8>,
 ) {
+    let iw = img.width() as i32;
+    let ih = img.height() as i32;
+    if iw == 0 || ih == 0 {
+        return;
+    }
     let lx = x0.min(x1);
     let rx = x0.max(x1);
     let ty = y0.min(y1);
@@ -1650,8 +1890,6 @@ fn raster_filled_ellipse(
     let rx_rad = ((rx - lx) * 0.5).max(1.0);
     let ry_rad = ((by - ty) * 0.5).max(1.0);
 
-    let iw = img.width() as i32;
-    let ih = img.height() as i32;
     let min_x = (lx.floor() as i32).clamp(0, iw - 1);
     let max_x = (rx.ceil() as i32).clamp(0, iw - 1);
     let min_y = (ty.floor() as i32).clamp(0, ih - 1);
@@ -1704,58 +1942,71 @@ fn raster_arrow(
     raster_thick_line(img, end, wing_r, r, color);
 }
 
+/// Crisp vector glyph rasterizer for step numbers using embedded Roboto via `ab_glyph`.
 fn raster_number(
     img: &mut RgbaImage,
     cx: f32,
     cy: f32,
     number: u32,
-    scale: f32,
+    font_px: f32,
     color: Rgba<u8>,
 ) {
-    const DIGITS: [[u8; 5]; 10] = [
-        [0b111, 0b101, 0b101, 0b101, 0b111],
-        [0b010, 0b110, 0b010, 0b010, 0b111],
-        [0b111, 0b001, 0b111, 0b100, 0b111],
-        [0b111, 0b001, 0b111, 0b001, 0b111],
-        [0b101, 0b101, 0b111, 0b001, 0b001],
-        [0b111, 0b100, 0b111, 0b001, 0b111],
-        [0b111, 0b100, 0b111, 0b101, 0b111],
-        [0b111, 0b001, 0b001, 0b001, 0b001],
-        [0b111, 0b101, 0b111, 0b101, 0b111],
-        [0b111, 0b101, 0b111, 0b001, 0b111],
-    ];
+    let Some(font) = font_for(TextFont::Roboto) else { return };
+    let text = number.to_string();
+    let scale = PxScale::from(font_px.max(10.0));
+    let scaled = font.as_scaled(scale);
 
-    let s = number.to_string();
-    let px = (2.2 * scale).round().max(1.0) as i32;
-    let total_w = s.len() as i32 * 3 * px + (s.len() as i32 - 1) * px;
-    let total_h = 5 * px;
-    let start_x = cx.round() as i32 - total_w / 2;
-    let start_y = cy.round() as i32 - total_h / 2;
+    let mut total_advance = 0.0_f32;
+    let mut prev_id = None;
+    for ch in text.chars() {
+        let gid = font.glyph_id(ch);
+        if let Some(prev) = prev_id {
+            total_advance += scaled.kern(prev, gid);
+        }
+        total_advance += scaled.h_advance(gid);
+        prev_id = Some(gid);
+    }
+
+    let mut glyphs = Vec::with_capacity(text.len());
+    let mut cursor_x = cx - total_advance * 0.5;
+    let baseline_y = cy + (scaled.ascent() + scaled.descent()) * 0.5;
+    let mut prev_id = None;
+    let mut min_y = f32::INFINITY;
+    let mut max_y = f32::NEG_INFINITY;
+
+    for ch in text.chars() {
+        let gid = font.glyph_id(ch);
+        if let Some(prev) = prev_id {
+            cursor_x += scaled.kern(prev, gid);
+        }
+        let glyph = gid.with_scale_and_position(scale, ab_glyph::point(cursor_x, baseline_y));
+        if let Some(outlined) = font.outline_glyph(glyph) {
+            let b = outlined.px_bounds();
+            min_y = min_y.min(b.min.y);
+            max_y = max_y.max(b.max.y);
+            glyphs.push(outlined);
+        }
+        cursor_x += scaled.h_advance(gid);
+        prev_id = Some(gid);
+    }
+
+    let y_shift = if min_y.is_finite() && max_y.is_finite() {
+        cy - (min_y + max_y) * 0.5
+    } else {
+        0.0
+    };
 
     let w = img.width() as i32;
     let h = img.height() as i32;
-
-    for (idx, ch) in s.chars().enumerate() {
-        let Some(d) = ch.to_digit(10) else { continue };
-        let glyph = DIGITS[d as usize];
-        let gx = start_x + idx as i32 * 4 * px;
-        for (row, &bits) in glyph.iter().enumerate() {
-            for col in 0..3 {
-                if (bits >> (2 - col)) & 1 == 1 {
-                    let x0 = gx + col * px;
-                    let y0 = start_y + row as i32 * px;
-                    for dy in 0..px {
-                        for dx in 0..px {
-                            let ix = x0 + dx;
-                            let iy = y0 + dy;
-                            if ix >= 0 && ix < w && iy >= 0 && iy < h {
-                                img.put_pixel(ix as u32, iy as u32, color);
-                            }
-                        }
-                    }
-                }
+    for outlined in glyphs {
+        let bounds = outlined.px_bounds();
+        outlined.draw(|gx, gy, cov| {
+            let px = bounds.min.x.round() as i32 + gx as i32;
+            let py = (bounds.min.y + y_shift).round() as i32 + gy as i32;
+            if px >= 0 && px < w && py >= 0 && py < h && cov > 0.02 {
+                blend_pixel(img, px as u32, py as u32, color, cov);
             }
-        }
+        });
     }
 }
 
@@ -1767,8 +2018,8 @@ mod tests {
     #[test]
     fn embedded_fonts_parse_and_roundtrip() {
         assert!(FontArc::try_from_slice(ROBOTO_FONT_BYTES).is_ok());
-        assert!(FontArc::try_from_slice(GOST_TYPE_AU_BYTES).is_ok());
-        assert_eq!(AppSettings::default().text_font, TextFont::GostTypeAU);
+        assert_eq!(AppSettings::default().text_font, TextFont::Roboto);
+        assert!(font_for(TextFont::GostTypeAU).is_some());
         for tf in TextFont::ALL {
             assert_eq!(TextFont::from_code(tf.code()), tf);
         }
@@ -1795,13 +2046,13 @@ mod tests {
 
     #[test]
     fn wrap_text_edge_cases_never_panic() {
-        let (l0, s0) = wrap_text_lines("", 24.0, TextFont::GostTypeAU, Some(40.0));
+        let (l0, s0) = wrap_text_lines("", 24.0, TextFont::Roboto, Some(40.0));
         assert!(!l0.is_empty() && s0.x >= 24.0 && s0.y > 0.0);
 
         let (l1, _) = wrap_text_lines(
             "СуперДовгеСловоБезПробілівЯкеМаєПеренестись",
             24.0,
-            TextFont::GostTypeAU,
+            TextFont::Roboto,
             Some(60.0),
         );
         assert!(l1.len() >= 2);
@@ -1811,17 +2062,64 @@ mod tests {
     }
 
     #[test]
-    fn blur_edge_cases_never_panic() {
+    fn blur_and_pixelate_edge_cases_never_panic() {
         let mut img = RgbaImage::new(10, 10);
-        // Inverted / out-of-bounds / zero-radius coords must safely no-op
         smooth_blur_region(&mut img, 8, 8, 2, 2, 10);
         smooth_blur_region(&mut img, -50, -50, -10, -10, 10);
         smooth_blur_region(&mut img, 50, 50, 100, 100, 10);
         smooth_blur_region(&mut img, 0, 0, 10, 10, 0);
+
+        pixelate_region(&mut img, 8, 8, 2, 2, 8);
+        pixelate_region(&mut img, -20, -20, 50, 50, 8);
+
+        let mut checkerboard = RgbaImage::new(8, 8);
+        for y in 0..8u32 {
+            for x in 0..8u32 {
+                let c = if (x + y) % 2 == 0 { 0 } else { 200 };
+                checkerboard.put_pixel(x, y, Rgba([c, c, c, 255]));
+            }
+        }
+        pixelate_region(&mut checkerboard, 0, 0, 8, 8, 8);
+        assert_eq!(*checkerboard.get_pixel(0, 0), Rgba([100, 100, 100, 255]));
+        assert_eq!(*checkerboard.get_pixel(7, 7), Rgba([100, 100, 100, 255]));
     }
 
     #[test]
-    fn render_export_all_annotations_safe() {
+    fn render_export_tiny_and_empty_images_never_panic() {
+        let empty = RgbaImage::new(0, 0);
+        let out_empty = render_export(
+            &empty,
+            Rect::from_min_max(Pos2::ZERO, Pos2::new(10.0, 10.0)),
+            1.0,
+            &[],
+        );
+        assert_eq!((out_empty.width(), out_empty.height()), (1, 1));
+
+        let tiny = RgbaImage::from_pixel(1, 1, Rgba([10, 20, 30, 255]));
+        let anns = vec![
+            Annotation::Blur {
+                rect: Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+                radius: 5.0,
+                pixelate: false,
+            },
+            Annotation::Rect {
+                rect: Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+                color: Color32::RED,
+                thickness: 4.0,
+                filled: true,
+            },
+        ];
+        let out_tiny = render_export(
+            &tiny,
+            Rect::from_min_max(Pos2::ZERO, Pos2::new(50.0, 50.0)),
+            2.0,
+            &anns,
+        );
+        assert_eq!((out_tiny.width(), out_tiny.height()), (1, 1));
+    }
+
+    #[test]
+    fn render_export_all_annotations_and_vector_step() {
         let src = RgbaImage::from_pixel(120, 120, Rgba([30, 40, 60, 255]));
         let anns = vec![
             Annotation::Pen {
@@ -1830,7 +2128,7 @@ mod tests {
                 thickness: 5.0,
             },
             Annotation::Marker {
-                points: vec![Pos2::new(15.0, 15.0), Pos2::new(40.0, 40.0)],
+                points: vec![Pos2::new(15.0, 15.0), Pos2::new(110.0, 100.0)],
                 color: Color32::YELLOW,
                 thickness: 5.0,
             },
@@ -1861,22 +2159,23 @@ mod tests {
             Annotation::Blur {
                 rect: Rect::from_min_max(Pos2::new(20.0, 20.0), Pos2::new(70.0, 70.0)),
                 radius: 8.0,
+                pixelate: true,
             },
             Annotation::Text {
                 pos: Pos2::new(60.0, 60.0),
-                text: "Тест ГОСТ Тип АУ".to_string(),
+                text: "Тест кирилиці".to_string(),
                 color: Color32::WHITE,
                 size: 24.0,
                 arrow_to: Some(Pos2::new(20.0, 20.0)),
                 thickness: 5.0,
                 placement: TextPlacement::CenterTop,
-                font: TextFont::GostTypeAU,
+                font: TextFont::Roboto,
                 box_size: Some(Vec2::new(80.0, 90.0)),
             },
             Annotation::Step {
                 pos: Pos2::new(100.0, 100.0),
-                number: 1,
-                color: Color32::GREEN,
+                number: 42,
+                color: Color32::from_rgb(10, 20, 30),
                 radius: 14.0,
             },
         ];
@@ -1888,5 +2187,208 @@ mod tests {
         );
         assert_eq!(out.width(), 120);
         assert_eq!(out.height(), 120);
+
+        // Verify vector step glyph pixels were actually drawn in contrasting white inside the circle
+        let mut white_pixels = 0usize;
+        for y in 92..=108u32 {
+            for x in 92..=108u32 {
+                let p = out.get_pixel(x, y);
+                if p[0] > 180 && p[1] > 180 && p[2] > 180 {
+                    white_pixels += 1;
+                }
+            }
+        }
+        assert!(white_pixels >= 8);
+    }
+
+    #[test]
+    fn scale_coords_scales_positions_and_thickness() {
+        let mut arrow = Annotation::Arrow {
+            start: Pos2::new(10.0, 20.0),
+            end: Pos2::new(30.0, 40.0),
+            color: Color32::RED,
+            thickness: 4.0,
+        };
+        arrow.scale_coords(2.0);
+        match arrow {
+            Annotation::Arrow {
+                start,
+                end,
+                thickness,
+                ..
+            } => {
+                assert_eq!(start, Pos2::new(20.0, 40.0));
+                assert_eq!(end, Pos2::new(60.0, 80.0));
+                assert_eq!(thickness, 8.0);
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn golden_arrow_renders_shaft_and_arrowhead() {
+        let bg = Rgba([20, 20, 30, 255]);
+        let src = RgbaImage::from_pixel(80, 80, bg);
+        let anns = vec![Annotation::Arrow {
+            start: Pos2::new(10.0, 40.0),
+            end: Pos2::new(70.0, 40.0),
+            color: Color32::from_rgb(255, 0, 0),
+            thickness: 4.0,
+        }];
+        let out = render_export(
+            &src,
+            Rect::from_min_max(Pos2::ZERO, Pos2::new(80.0, 80.0)),
+            1.0,
+            &anns,
+        );
+
+        let mid = out.get_pixel(40, 40);
+        assert!(mid[0] > 230 && mid[1] < 30 && mid[2] < 30, "mid={mid:?}");
+
+        let tip = out.get_pixel(68, 40);
+        assert!(tip[0] > 200, "tip={tip:?}");
+
+        let wing_hits = (30..39)
+            .flat_map(|y| (50..70).map(move |x| (x, y)))
+            .filter(|&(x, y)| out.get_pixel(x, y)[0] > 180)
+            .count();
+        assert!(wing_hits >= 5, "wing_hits={wing_hits}");
+        assert_eq!(*out.get_pixel(5, 5), bg);
+    }
+
+    #[test]
+    fn golden_gaussian_blur_smooths_sharp_edge() {
+        let mut src = RgbaImage::new(100, 60);
+        for y in 0..60 {
+            for x in 0..100 {
+                let c = if x < 50 {
+                    Rgba([0, 0, 0, 255])
+                } else {
+                    Rgba([255, 255, 255, 255])
+                };
+                src.put_pixel(x, y, c);
+            }
+        }
+        let anns = vec![Annotation::Blur {
+            rect: Rect::from_min_max(Pos2::new(20.0, 10.0), Pos2::new(80.0, 50.0)),
+            radius: 8.0,
+            pixelate: false,
+        }];
+        let out = render_export(
+            &src,
+            Rect::from_min_max(Pos2::ZERO, Pos2::new(100.0, 60.0)),
+            1.0,
+            &anns,
+        );
+        let seam_left = out.get_pixel(47, 30)[0];
+        let seam_right = out.get_pixel(52, 30)[0];
+        assert!(seam_left > 15 && seam_left < 200, "seam_left={seam_left}");
+        assert!(
+            seam_right > 55 && seam_right < 245,
+            "seam_right={seam_right}"
+        );
+        // Outside blur rect remains pure black/white
+        assert_eq!(*out.get_pixel(5, 30), Rgba([0, 0, 0, 255]));
+        assert_eq!(*out.get_pixel(95, 30), Rgba([255, 255, 255, 255]));
+    }
+
+    #[test]
+    fn golden_marker_uniform_alpha_without_joint_seams() {
+        let src = RgbaImage::from_pixel(100, 100, Rgba([255, 255, 255, 255]));
+        let anns = vec![Annotation::Marker {
+            points: vec![
+                Pos2::new(20.0, 50.0),
+                Pos2::new(50.0, 50.0),
+                Pos2::new(50.0, 80.0),
+            ],
+            color: Color32::from_rgb(0, 0, 255),
+            thickness: 5.0,
+        }];
+        let out = render_export(
+            &src,
+            Rect::from_min_max(Pos2::ZERO, Pos2::new(100.0, 100.0)),
+            1.0,
+            &anns,
+        );
+        let seg_mid = *out.get_pixel(35, 50);
+        let joint = *out.get_pixel(50, 50);
+        assert_eq!(seg_mid, joint, "marker joint must not double-darken");
+        assert!(joint[0] < 200 && joint[2] == 255, "joint={joint:?}");
+    }
+
+    #[test]
+    fn golden_z_order_blur_then_stroke_stays_crisp() {
+        let src = RgbaImage::from_pixel(100, 100, Rgba([30, 30, 30, 255]));
+        let anns = vec![
+            Annotation::Line {
+                start: Pos2::new(10.0, 40.0),
+                end: Pos2::new(90.0, 40.0),
+                color: Color32::from_rgb(255, 0, 0),
+                thickness: 6.0,
+            },
+            Annotation::Blur {
+                rect: Rect::from_min_max(Pos2::new(20.0, 20.0), Pos2::new(80.0, 80.0)),
+                radius: 8.0,
+                pixelate: false,
+            },
+            Annotation::Line {
+                start: Pos2::new(10.0, 60.0),
+                end: Pos2::new(90.0, 60.0),
+                color: Color32::from_rgb(0, 255, 0),
+                thickness: 4.0,
+            },
+        ];
+        let out = render_export(
+            &src,
+            Rect::from_min_max(Pos2::ZERO, Pos2::new(100.0, 100.0)),
+            1.0,
+            &anns,
+        );
+        let red_blurred = out.get_pixel(50, 40);
+        let green_crisp = out.get_pixel(50, 60);
+        assert!(
+            red_blurred[0] < 200,
+            "red line before blur must be softened: {red_blurred:?}"
+        );
+        assert!(
+            green_crisp[1] > 230 && green_crisp[0] < 30,
+            "green line after blur must remain crisp: {green_crisp:?}"
+        );
+    }
+
+    #[test]
+    fn golden_text_and_step_render_visible_glyphs() {
+        let bg = Rgba([15, 20, 30, 255]);
+        let src = RgbaImage::from_pixel(160, 100, bg);
+        let anns = vec![
+            Annotation::Text {
+                pos: Pos2::new(70.0, 45.0),
+                text: "ABC".to_string(),
+                color: Color32::WHITE,
+                size: 20.0,
+                arrow_to: Some(Pos2::new(20.0, 80.0)),
+                thickness: 3.0,
+                placement: TextPlacement::LeftTop,
+                font: TextFont::Roboto,
+                box_size: Some(Vec2::new(120.0, 60.0)),
+            },
+            Annotation::Step {
+                pos: Pos2::new(135.0, 75.0),
+                number: 7,
+                color: Color32::from_rgb(20, 180, 170),
+                radius: 13.0,
+            },
+        ];
+        let out = render_export(
+            &src,
+            Rect::from_min_max(Pos2::ZERO, Pos2::new(160.0, 100.0)),
+            1.0,
+            &anns,
+        );
+        let lit_pixels = (0..100)
+            .flat_map(|y| (0..160).map(move |x| (x, y)))
+            .filter(|&(x, y)| *out.get_pixel(x, y) != bg)
+            .count();
+        assert!(lit_pixels > 150, "lit_pixels={lit_pixels}");
     }
 }

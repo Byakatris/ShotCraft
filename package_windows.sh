@@ -4,33 +4,49 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 APP_NAME="ShotCraft"
-APP_VERSION="0.5.0"
+APP_VERSION="$(grep -m1 '^version' Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')"
+APP_SHORT_VER="$(echo "${APP_VERSION}" | awk -F. '{print $1"."$2}')"
 DIST_DIR="$(pwd)/dist"
 STAGE_DIR="${DIST_DIR}/win_stage"
-INSTALLER_PATH="${DIST_DIR}/${APP_NAME}-v0.5-Setup.exe"
+INSTALLER_NAME="${APP_NAME}-v${APP_SHORT_VER}-Setup.exe"
+INSTALLER_PATH="${DIST_DIR}/${INSTALLER_NAME}"
 
-echo "==> Building Windows x86_64 release binary..."
-RUSTFLAGS="-D warnings" cargo build --release --target x86_64-pc-windows-gnu
+UNAME_S="$(uname -s || echo Unknown)"
+case "${UNAME_S}" in
+  MINGW*|MSYS*|CYGWIN*)
+    echo "==> Building Windows x86_64 release binary natively (v${APP_VERSION})..."
+    RUSTFLAGS="-D warnings" cargo build --release
+    BIN_PATH="target/release/shotcraft.exe"
+    "${BIN_PATH}" --smoke-test
+    ;;
+  *)
+    echo "==> Cross-compiling Windows x86_64 release binary (v${APP_VERSION})..."
+    RUSTFLAGS="-D warnings" cargo build --release --target x86_64-pc-windows-gnu
+    BIN_PATH="target/x86_64-pc-windows-gnu/release/shotcraft.exe"
+    ;;
+esac
 
 rm -rf "${STAGE_DIR}" "${INSTALLER_PATH}"
 mkdir -p "${STAGE_DIR}"
 
-cp "target/x86_64-pc-windows-gnu/release/snaply.exe" "${STAGE_DIR}/${APP_NAME}.exe"
+cp "${BIN_PATH}" "${STAGE_DIR}/${APP_NAME}.exe"
 
-echo "==> Generating ShotCraft.ico from assets/app_icon.png..."
-python3 - <<'PY'
+if [ -f "assets/app_icon.ico" ]; then
+  echo "==> Using prebuilt assets/app_icon.ico..."
+  cp "assets/app_icon.ico" "${STAGE_DIR}/ShotCraft.ico"
+else
+  echo "==> Generating ShotCraft.ico from assets/app_icon.png..."
+  python3 - <<'PY'
 import io, struct
 from PIL import Image
 
-# Crop the 824x824 squircle from assets/app_icon.png so Windows icons fill the tile crisply
 src = Image.open("assets/app_icon.png").convert("RGBA")
 bbox = src.getbbox()
 if bbox:
     src = src.crop(bbox)
 
-sizes = [16, 32, 48, 256]
 images = []
-for sz in sizes:
+for sz in (16, 32, 48, 256):
     resized = src.resize((sz, sz), Image.Resampling.LANCZOS)
     bio = io.BytesIO()
     resized.save(bio, format="PNG", optimize=True)
@@ -49,6 +65,7 @@ for sz, png in images:
 with open("dist/win_stage/ShotCraft.ico", "wb") as f:
     f.write(header + entries + payload)
 PY
+fi
 
 cat > "${STAGE_DIR}/installer.nsi" <<NSI
 Unicode True
@@ -60,7 +77,7 @@ Unicode True
 !define UNINST_KEY "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\\${APP_NAME}"
 
 Name "\${APP_NAME}"
-OutFile "${INSTALLER_PATH}"
+OutFile "../${INSTALLER_NAME}"
 InstallDir "\$LOCALAPPDATA\\\${APP_NAME}"
 InstallDirRegKey HKCU "\${UNINST_KEY}" "InstallLocation"
 RequestExecutionLevel user
@@ -94,7 +111,6 @@ VIAddVersionKey "LegalCopyright" "\${APP_NAME}"
 
 Section "\${APP_NAME} (required)" SecMain
   SectionIn RO
-  ; Close running instance cleanly before upgrading
   nsExec::ExecToStack 'taskkill /F /IM \${APP_EXE}'
   Pop \$0
   Pop \$1
@@ -149,8 +165,20 @@ Section "Uninstall"
 SectionEnd
 NSI
 
+MAKENSIS_BIN="$(command -v makensis || true)"
+if [ -z "${MAKENSIS_BIN}" ] && [ -x "/c/Program Files (x86)/NSIS/makensis.exe" ]; then
+  MAKENSIS_BIN="/c/Program Files (x86)/NSIS/makensis.exe"
+fi
+if [ -z "${MAKENSIS_BIN}" ] && [ -x "/c/Program Files/NSIS/makensis.exe" ]; then
+  MAKENSIS_BIN="/c/Program Files/NSIS/makensis.exe"
+fi
+if [ -z "${MAKENSIS_BIN}" ]; then
+  echo "ERROR: makensis not found" >&2
+  exit 1
+fi
+
 echo "==> Compiling Windows NSIS installer..."
-makensis -V2 "${STAGE_DIR}/installer.nsi"
+(cd "${STAGE_DIR}" && "${MAKENSIS_BIN}" -V2 installer.nsi)
 
 rm -rf "${STAGE_DIR}"
 ls -lh "${INSTALLER_PATH}"

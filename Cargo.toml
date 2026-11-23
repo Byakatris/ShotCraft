@@ -1,7 +1,8 @@
 [package]
-name = "snaply"
-version = "0.5.0"
+name = "shotcraft"
+version = "0.6.0"
 edition = "2024"
+license = "MIT"
 description = "Lightweight, fast cross-platform screenshot and annotation app in Rust"
 
 [dependencies]
@@ -30,8 +31,19 @@ objc2 = "0.6"
 gtk = "0.18"
 
 [profile.release]
-opt-level = "z"
+opt-level = "s"
 lto = true
 codegen-units = 1
 strip = true
-panic = "abort"
+
+[profile.release.package.png]
+opt-level = 3
+
+[profile.release.package.flate2]
+opt-level = 3
+
+[profile.release.package.miniz_oxide]
+opt-level = 3
+
+[profile.release.package.image]
+opt-level = 3

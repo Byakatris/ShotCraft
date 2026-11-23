@@ -5,14 +5,16 @@ cd "$(dirname "$0")"
 
 APP_NAME="ShotCraft"
 PKG_NAME="shotcraft"
-APP_VERSION="0.5.0"
+APP_VERSION="$(grep -m1 '^version' Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')"
+APP_SHORT_VER="$(echo "${APP_VERSION}" | awk -F. '{print $1"."$2}')"
 DIST_DIR="$(pwd)/dist"
 DEB_STAGE="${DIST_DIR}/deb_stage"
-TAR_STAGE="${DIST_DIR}/tar_stage/${APP_NAME}-v0.5-linux-x86_64"
-DEB_PATH="${DIST_DIR}/${APP_NAME}-v0.5-linux-amd64.deb"
-TAR_PATH="${DIST_DIR}/${APP_NAME}-v0.5-linux-x86_64.tar.gz"
+TAR_STAGE_NAME="${APP_NAME}-v${APP_SHORT_VER}-linux-x86_64"
+TAR_STAGE="${DIST_DIR}/tar_stage/${TAR_STAGE_NAME}"
+DEB_PATH="${DIST_DIR}/${APP_NAME}-v${APP_SHORT_VER}-linux-amd64.deb"
+TAR_PATH="${DIST_DIR}/${APP_NAME}-v${APP_SHORT_VER}-linux-x86_64.tar.gz"
 
-echo "==> Building Linux x86_64 release binary..."
+echo "==> Building Linux x86_64 release binary (v${APP_VERSION})..."
 RUSTFLAGS="-D warnings" cargo build --release
 
 rm -rf "${DEB_STAGE}" "${DIST_DIR}/tar_stage" "${DEB_PATH}" "${TAR_PATH}"
@@ -23,7 +25,7 @@ mkdir -p \
   "${DEB_STAGE}/usr/share/icons/hicolor/512x512/apps" \
   "${TAR_STAGE}"
 
-cp "target/release/snaply" "${DEB_STAGE}/usr/bin/${PKG_NAME}"
+cp "target/release/shotcraft" "${DEB_STAGE}/usr/bin/${PKG_NAME}"
 chmod 755 "${DEB_STAGE}/usr/bin/${PKG_NAME}"
 
 cp "assets/app_icon.png" "${DEB_STAGE}/usr/share/icons/hicolor/512x512/apps/${PKG_NAME}.png"
@@ -55,7 +57,7 @@ echo "==> Building ${DEB_PATH}..."
 dpkg-deb --build "${DEB_STAGE}" "${DEB_PATH}"
 
 echo "==> Building ${TAR_PATH}..."
-cp "target/release/snaply" "${TAR_STAGE}/${APP_NAME}"
+cp "target/release/shotcraft" "${TAR_STAGE}/${APP_NAME}"
 chmod 755 "${TAR_STAGE}/${APP_NAME}"
 cp "assets/app_icon.png" "${TAR_STAGE}/${PKG_NAME}.png"
 cp "${DEB_STAGE}/usr/share/applications/${PKG_NAME}.desktop" "${TAR_STAGE}/${PKG_NAME}.desktop"
@@ -71,7 +73,7 @@ sed "s|Exec=shotcraft|Exec=$HOME/.local/bin/shotcraft|" shotcraft.desktop > "$HO
 echo "Installed ShotCraft to $HOME/.local/bin/shotcraft"
 INSTALL
 chmod 755 "${TAR_STAGE}/install.sh"
-tar -C "${DIST_DIR}/tar_stage" -czf "${TAR_PATH}" "${APP_NAME}-v0.5-linux-x86_64"
+tar -C "${DIST_DIR}/tar_stage" -czf "${TAR_PATH}" "${TAR_STAGE_NAME}"
 
 rm -rf "${DEB_STAGE}" "${DIST_DIR}/tar_stage"
 ls -lh "${DEB_PATH}" "${TAR_PATH}"

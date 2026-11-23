@@ -87,7 +87,7 @@ fn sample_stops(stops: &[(f32, Color32)], t: f32) -> Color32 {
             return lerp_color(c0, c1, f);
         }
     }
-    stops.last().unwrap().1
+    stops.last().map_or(Color32::WHITE, |s| s.1)
 }
 
 pub fn color_from_slider(t: f32) -> Color32 {
@@ -180,6 +180,9 @@ pub fn draw_rounded_texture_uv(
 
 /// 2x stronger blur texture for Text readability backdrop.
 pub fn make_strong_text_blur_image(src: &RgbaImage) -> ColorImage {
+    if src.width() == 0 || src.height() == 0 {
+        return ColorImage::from_rgba_unmultiplied([1, 1], &[0, 0, 0, 255]);
+    }
     let factor = 4u32;
     let w = (src.width() / factor).max(1) as usize;
     let h = (src.height() / factor).max(1) as usize;
@@ -566,8 +569,9 @@ pub fn m3_color_slider(
     ui: &mut Ui,
     width: f32,
     color_pos: &mut f32,
+    tooltip: &str,
     theme: &ThemeColors,
-) -> Color32 {
+) -> (Color32, bool) {
     let total_size = Vec2::new(width.max(120.0), 28.0);
     let (rect, _) = ui.allocate_exact_size(total_size, Sense::hover());
     let track_h = 9.0;
@@ -664,8 +668,9 @@ pub fn m3_color_slider(
         painter.rect_filled(bar, 1.2, Color32::WHITE);
     }
 
-    resp.on_hover_text("Color");
-    current
+    let dragging = resp.dragged();
+    resp.on_hover_text(tooltip);
+    (current, dragging)
 }
 
 fn draw_simple_stops_slider(
@@ -756,7 +761,14 @@ fn draw_stops_track(
 const SIZE_PRESETS: [f32; 5] = [2.0, 5.0, 10.0, 15.0, 20.0];
 
 /// Material 3 Universal Size Slider (1.5x wider) with 5 preset size circles above the track.
-pub fn m3_size_slider(ui: &mut Ui, value: &mut f32, min: f32, max: f32, theme: &ThemeColors) {
+pub fn m3_size_slider(
+    ui: &mut Ui,
+    value: &mut f32,
+    min: f32,
+    max: f32,
+    tooltip: &str,
+    theme: &ThemeColors,
+) -> bool {
     let total_size = Vec2::new(138.0, 28.0);
     let (rect, _) = ui.allocate_exact_size(total_size, Sense::hover());
 
@@ -877,7 +889,9 @@ pub fn m3_size_slider(ui: &mut Ui, value: &mut f32, min: f32, max: f32, theme: &
         );
     }
 
-    resp.on_hover_text(format!("Size: {:.0} px", *value));
+    let dragging = resp.dragged();
+    resp.on_hover_text(format!("{tooltip}: {:.0} px", *value));
+    dragging
 }
 
 /// Vertical Material 3 Color Slider (in right column of vertical bar) with 9 preset circles snugly to the left of the track.
@@ -885,8 +899,9 @@ pub fn m3_color_slider_vertical(
     ui: &mut Ui,
     height: f32,
     color_pos: &mut f32,
+    tooltip: &str,
     theme: &ThemeColors,
-) -> Color32 {
+) -> (Color32, bool) {
     let total_size = Vec2::new(32.0, height.max(120.0));
     let (rect, _) = ui.allocate_exact_size(total_size, Sense::hover());
     let track_w = 9.0;
@@ -947,7 +962,7 @@ pub fn m3_color_slider_vertical(
     painter.circle_filled(
         Pos2::new(track_rect.center().x, track_rect.bottom() - r),
         r,
-        COLOR_STOPS.last().unwrap().1,
+        COLOR_STOPS.last().map_or(Color32::WHITE, |s| s.1),
     );
     let inner = Rect::from_min_max(
         Pos2::new(track_rect.left(), track_rect.top() + r),
@@ -1002,8 +1017,9 @@ pub fn m3_color_slider_vertical(
         painter.rect_filled(bar, 1.2, Color32::WHITE);
     }
 
-    resp.on_hover_text("Color");
-    current
+    let dragging = resp.dragged();
+    resp.on_hover_text(tooltip);
+    (current, dragging)
 }
 
 /// Vertical Material 3 Size Slider (1.5x taller; compact teardrop pops outward with pixel number).
@@ -1013,8 +1029,9 @@ pub fn m3_size_slider_vertical(
     value: &mut f32,
     min: f32,
     max: f32,
+    tooltip: &str,
     theme: &ThemeColors,
-) {
+) -> bool {
     let total_size = Vec2::new(32.0, height.max(90.0));
     let (rect, _) = ui.allocate_exact_size(total_size, Sense::hover());
     let track_w = 8.0;
@@ -1123,5 +1140,7 @@ pub fn m3_size_slider_vertical(
         );
     }
 
-    resp.on_hover_text(format!("Size: {:.0} px", *value));
+    let dragging = resp.dragged();
+    resp.on_hover_text(format!("{tooltip}: {:.0} px", *value));
+    dragging
 }

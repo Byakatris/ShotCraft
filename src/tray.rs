@@ -3,6 +3,7 @@ use global_hotkey::GlobalHotKeyManager;
 use muda::{Menu, MenuId, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 
+use crate::diagnostics;
 use crate::settings::{AppSettings, Strings};
 
 pub struct TrayState {
@@ -13,6 +14,7 @@ pub struct TrayState {
     pub id_live_draw: MenuId,
     pub id_open_folder: MenuId,
     pub id_settings: MenuId,
+    pub id_check_updates: MenuId,
     pub id_quit: MenuId,
     pub hotkey_manager: Option<GlobalHotKeyManager>,
     pub registered_hotkeys: Vec<HotKey>,
@@ -22,19 +24,35 @@ pub struct TrayState {
     pub hk_live_draw_id: u32,
 }
 
-impl TrayState {
-    pub fn apply_settings(&mut self, settings: &AppSettings) -> Result<(), String> {
-        let (menu, id_full, id_area, id_window, id_live_draw, id_open, id_settings, id_quit) =
-            build_menu(settings)?;
+struct BuiltMenu {
+    menu: Menu,
+    id_full: MenuId,
+    id_area: MenuId,
+    id_window: MenuId,
+    id_live_draw: MenuId,
+    id_open: MenuId,
+    id_settings: MenuId,
+    id_check_updates: MenuId,
+    id_quit: MenuId,
+}
 
-        self.tray.set_menu(Some(Box::new(menu)));
-        self.id_capture_full = id_full;
-        self.id_capture_area = id_area;
-        self.id_capture_window = id_window;
-        self.id_live_draw = id_live_draw;
-        self.id_open_folder = id_open;
-        self.id_settings = id_settings;
-        self.id_quit = id_quit;
+impl TrayState {
+    pub fn apply_settings(
+        &mut self,
+        settings: &AppSettings,
+        available_version: Option<&str>,
+    ) -> Result<(), String> {
+        let built = build_menu(settings, available_version)?;
+
+        self.tray.set_menu(Some(Box::new(built.menu)));
+        self.id_capture_full = built.id_full;
+        self.id_capture_area = built.id_area;
+        self.id_capture_window = built.id_window;
+        self.id_live_draw = built.id_live_draw;
+        self.id_open_folder = built.id_open;
+        self.id_settings = built.id_settings;
+        self.id_check_updates = built.id_check_updates;
+        self.id_quit = built.id_quit;
 
         if let Some(mgr) = &self.hotkey_manager {
             if !self.registered_hotkeys.is_empty() {
@@ -54,7 +72,10 @@ impl TrayState {
 
             for hk in [hk_full, hk_area, hk_win, hk_live] {
                 if let Err(e) = mgr.register(hk) {
-                    eprintln!("Warning: could not register hotkey {}: {e}", hk.id());
+                    diagnostics::log_error(
+                        "tray.hotkey",
+                        &format!("Could not register hotkey {}: {e}", hk.id()),
+                    );
                 } else {
                     self.registered_hotkeys.push(hk);
                 }
@@ -65,14 +86,16 @@ impl TrayState {
     }
 }
 
-pub fn build_tray(settings: &AppSettings) -> Result<TrayState, String> {
-    let (menu, id_full, id_area, id_window, id_live_draw, id_open, id_settings, id_quit) =
-        build_menu(settings)?;
+pub fn build_tray(
+    settings: &AppSettings,
+    available_version: Option<&str>,
+) -> Result<TrayState, String> {
+    let built = build_menu(settings, available_version)?;
 
     let icon = make_shotcraft_icon()?;
     #[allow(unused_mut)]
     let mut tray_builder = TrayIconBuilder::new()
-        .with_menu(Box::new(menu))
+        .with_menu(Box::new(built.menu))
         .with_menu_on_left_click(true)
         .with_tooltip("ShotCraft")
         .with_icon(icon);
@@ -99,7 +122,10 @@ pub fn build_tray(settings: &AppSettings) -> Result<TrayState, String> {
         Ok(mgr) => {
             for hk in [hk_full, hk_area, hk_win, hk_live] {
                 if let Err(e) = mgr.register(hk) {
-                    eprintln!("Warning: could not register hotkey {}: {e}", hk.id());
+                    diagnostics::log_error(
+                        "tray.hotkey",
+                        &format!("Could not register hotkey {}: {e}", hk.id()),
+                    );
                 } else {
                     registered_hotkeys.push(hk);
                 }
@@ -107,20 +133,32 @@ pub fn build_tray(settings: &AppSettings) -> Result<TrayState, String> {
             Some(mgr)
         }
         Err(e) => {
-            eprintln!("Warning: GlobalHotKeyManager unavailable: {e}");
+            #[cfg(target_os = "linux")]
+            diagnostics::log_error(
+                "tray.hotkey",
+                &format!(
+                    "Global hotkeys unavailable (Wayland requires X11/XWayland; tray menu remains active): {e}"
+                ),
+            );
+            #[cfg(not(target_os = "linux"))]
+            diagnostics::log_error(
+                "tray.hotkey",
+                &format!("GlobalHotKeyManager unavailable: {e}"),
+            );
             None
         }
     };
 
     Ok(TrayState {
         tray,
-        id_capture_full: id_full,
-        id_capture_area: id_area,
-        id_capture_window: id_window,
-        id_live_draw,
-        id_open_folder: id_open,
-        id_settings,
-        id_quit,
+        id_capture_full: built.id_full,
+        id_capture_area: built.id_area,
+        id_capture_window: built.id_window,
+        id_live_draw: built.id_live_draw,
+        id_open_folder: built.id_open,
+        id_settings: built.id_settings,
+        id_check_updates: built.id_check_updates,
+        id_quit: built.id_quit,
         hotkey_manager,
         registered_hotkeys,
         hk_full_id,
@@ -130,10 +168,7 @@ pub fn build_tray(settings: &AppSettings) -> Result<TrayState, String> {
     })
 }
 
-#[allow(clippy::type_complexity)]
-fn build_menu(
-    settings: &AppSettings,
-) -> Result<(Menu, MenuId, MenuId, MenuId, MenuId, MenuId, MenuId, MenuId), String> {
+fn build_menu(settings: &AppSettings, available_version: Option<&str>) -> Result<BuiltMenu, String> {
     let menu = Menu::new();
     let t = Strings::for_lang(settings.language);
 
@@ -147,14 +182,20 @@ fn build_menu(
     );
     let item_open = MenuItem::new(t.menu_open_folder, true, None);
     let item_settings = MenuItem::new(t.menu_settings, true, None);
+    let update_label = match available_version {
+        Some(ver) => format!("{} (v{ver})", t.menu_update_available),
+        None => t.menu_check_updates.to_string(),
+    };
+    let item_updates = MenuItem::new(update_label, true, None);
     let item_quit = MenuItem::new(t.menu_quit, true, None);
 
     let id_full = item_full.id().clone();
     let id_area = item_area.id().clone();
-    let id_win = item_win.id().clone();
+    let id_window = item_win.id().clone();
     let id_live_draw = item_live_draw.id().clone();
     let id_open = item_open.id().clone();
     let id_settings = item_settings.id().clone();
+    let id_check_updates = item_updates.id().clone();
     let id_quit = item_quit.id().clone();
 
     menu.append(&item_full).map_err(|e| e.to_string())?;
@@ -165,20 +206,22 @@ fn build_menu(
         .map_err(|e| e.to_string())?;
     menu.append(&item_open).map_err(|e| e.to_string())?;
     menu.append(&item_settings).map_err(|e| e.to_string())?;
+    menu.append(&item_updates).map_err(|e| e.to_string())?;
     menu.append(&PredefinedMenuItem::separator())
         .map_err(|e| e.to_string())?;
     menu.append(&item_quit).map_err(|e| e.to_string())?;
 
-    Ok((
+    Ok(BuiltMenu {
         menu,
         id_full,
         id_area,
-        id_win,
+        id_window,
         id_live_draw,
         id_open,
         id_settings,
+        id_check_updates,
         id_quit,
-    ))
+    })
 }
 
 /// Generate a minimalist 32x32 tray icon featuring a screenshot viewfinder + "SC" monogram.
