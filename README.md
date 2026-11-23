@@ -26,6 +26,12 @@ Pick your platform for a direct 1-click installer (or view [all releases](https:
 | **Linux (Debian / Ubuntu)** | [**Download `ShotCraft-v0.6-linux-amd64.deb`**](https://github.com/Byakatris/ShotCraft/releases/download/v0.6.0/ShotCraft-v0.6-linux-amd64.deb) | Ubuntu / Debian (`amd64`) |
 | **Linux (Universal)** | [**Download `ShotCraft-v0.6-linux-x86_64.tar.gz`**](https://github.com/Byakatris/ShotCraft/releases/download/v0.6.0/ShotCraft-v0.6-linux-x86_64.tar.gz) | Any x86_64 distro |
 
+> [!NOTE]
+> **macOS first launch:** Unsigned GitHub builds trigger macOS Gatekeeper. After moving **ShotCraft.app** to Applications, run once in Terminal:
+> ```bash
+> xattr -cr /Applications/ShotCraft.app
+> ```
+
 <div align="center">
 
 ![ShotCraft in action](assets/media/demo.gif)
