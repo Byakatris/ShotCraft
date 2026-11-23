@@ -51,9 +51,13 @@ jobs:
           RUSTFLAGS: "-D warnings"
         run: cargo test
 
+      - name: Install NSIS
+        run: choco install nsis -y --no-progress
+
       - name: Build & Package Windows NSIS (.exe)
         shell: bash
         run: |
+          export PATH="/c/Program Files (x86)/NSIS:/c/ProgramData/chocolatey/bin:${PATH}"
           chmod +x package_windows.sh
           ./package_windows.sh
 
