@@ -19,6 +19,9 @@ jobs:
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+
       - name: Run unit tests
         env:
           RUSTFLAGS: "-D warnings"
@@ -45,6 +48,9 @@ jobs:
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
 
       - name: Run unit tests
         env:
@@ -77,6 +83,9 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-pc-windows-msvc
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
 
       - name: Run unit tests (ARM64)
         env:
@@ -117,6 +126,9 @@ jobs:
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+
       - name: Install Linux GUI & capture dependencies
         run: |
           sudo apt-get update
@@ -150,6 +162,7 @@ jobs:
         run: |
           chmod +x package_linux.sh
           ./package_linux.sh
+          dpkg-deb --info dist/ShotCraft-v*-linux-amd64.deb
           xvfb-run -a target/release/shotcraft --version
           xvfb-run -a target/release/shotcraft --smoke-test
 
@@ -179,11 +192,16 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           APP_VERSION="$(grep -m1 '^version' Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')"
-          SHORT_VER="$(echo "${APP_VERSION}" | awk -F. '{print $1"."$2}')"
           TAG="${GITHUB_REF_NAME}"
+          if [ "${GITHUB_EVENT_NAME}" = "push" ] && [ "${TAG}" != "v${APP_VERSION}" ]; then
+            echo "ERROR: Tag ${TAG} does not match Cargo.toml version v${APP_VERSION}" >&2
+            exit 1
+          fi
           if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ] || [[ "${TAG}" != v* ]]; then
             TAG="v${APP_VERSION}"
           fi
+
+          (cd release_assets && sha256sum * > SHA256SUMS.txt)
 
           printf '%s\n' \
             "## ShotCraft ${TAG}" \
@@ -191,14 +209,17 @@ jobs:
             "Ultra-fast, lightweight (~1-3 MB) cross-platform screenshot & annotation app written in Rust." \
             "" \
             "### Direct Downloads" \
-            "- **macOS (Apple Silicon):** \`ShotCraft-v${SHORT_VER}.dmg\`" \
-            "- **Windows (x64 Installer):** \`ShotCraft-v${SHORT_VER}-Setup.exe\`" \
-            "- **Windows (ARM64 Installer):** \`ShotCraft-v${SHORT_VER}-arm64-Setup.exe\`" \
-            "- **Linux (Ubuntu / Debian):** \`ShotCraft-v${SHORT_VER}-linux-amd64.deb\`" \
-            "- **Linux (Universal x86_64):** \`ShotCraft-v${SHORT_VER}-linux-x86_64.tar.gz\`" \
+            "- **macOS (Apple Silicon):** \`ShotCraft-v${APP_VERSION}.dmg\`" \
+            "- **Windows (x64 Installer):** \`ShotCraft-v${APP_VERSION}-Setup.exe\`" \
+            "- **Windows (ARM64 Installer):** \`ShotCraft-v${APP_VERSION}-arm64-Setup.exe\`" \
+            "- **Linux (Ubuntu / Debian):** \`ShotCraft-v${APP_VERSION}-linux-amd64.deb\`" \
+            "- **Linux (Universal x86_64):** \`ShotCraft-v${APP_VERSION}-linux-x86_64.tar.gz\`" \
+            "- **Checksums:** \`SHA256SUMS.txt\`" \
             "" \
             "### Highlights" \
-            "- Built-in **Auto-Updater** (menu bar tray & Settings -> Check / Update now)" \
+            "- New pure-vector **Apple Liquid Glass** app icon (\`app_icon.svg\`, \`.icns\`, \`.ico\`, \`.png\`)" \
+            "- Tight-stride dashed mode (\`Cmd/Ctrl\`) for **Pen**, **Marker**, **Line**, and **Arrow**; 2-point independent move handles for **Text** callouts" \
+            "- Hardened **Auto-Updater** with fail-closed FIPS 180-4 SHA-256 verification against \`SHA256SUMS.txt\` (tray & Settings -> Check / Update now)" \
             "- **50-step Undo/Redo**, 2-pass Gaussian **Blur** & **Pixelate**, vector **Step** numbering, **Screen Draw**" \
             "- Native HiDPI & mixed-DPI multi-monitor coordinates across macOS, Windows, and Linux" \
             "- Rotating \`shotcraft.log\` diagnostics & non-blocking OS notifications" \

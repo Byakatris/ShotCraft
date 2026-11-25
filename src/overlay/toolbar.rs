@@ -11,6 +11,9 @@ use crate::settings::{Strings, TextFont, ToolbarLayout};
 
 use super::{DragAction, OverlayOutcome, OverlayShared, PendingText};
 
+type ToolIconFn = fn(&egui::Painter, Rect, Color32);
+type ToolEntry<'a> = (Tool, &'a str, &'a str, ToolIconFn);
+
 pub(super) fn draw_text_callout_preview(
     ctx: &egui::Context,
     painter: &egui::Painter,
@@ -26,30 +29,31 @@ pub(super) fn draw_text_callout_preview(
     };
     let map_rect = |r: Rect| -> Rect { Rect::from_min_max(map_pt(r.min), map_pt(r.max)) };
 
-    if matches!(shared.drag_action, Some(DragAction::TextCallout)) {
-        if let (Some(start), Some(curr)) = (shared.drag_start, shared.drag_curr) {
-            let box_w = 104.0;
-            let box_h = shared.text_font_size() + 10.0;
-            let placement = TextPlacement::from_drag(start, curr);
-            let preview_box = placement.box_rect(curr, box_w, box_h);
-            painter.rect_stroke(
-                map_rect(preview_box),
-                8.0 * view_scale,
-                Stroke::new(1.4_f32, shared.active_color),
-                egui::StrokeKind::Inside,
+    if matches!(shared.drag_action, Some(DragAction::TextCallout))
+        && let (Some(start), Some(curr)) = (shared.drag_start, shared.drag_curr)
+    {
+        let box_w = 104.0;
+        let box_h = shared.text_font_size() + 10.0;
+        let placement = TextPlacement::from_drag(start, curr);
+        let preview_box = placement.box_rect(curr, box_w, box_h);
+        painter.rect_stroke(
+            map_rect(preview_box),
+            8.0 * view_scale,
+            Stroke::new(1.4_f32, shared.active_color),
+            egui::StrokeKind::Inside,
+        );
+        if start.distance(curr) >= 10.0 {
+            let anchor = callout_anchor(preview_box, start);
+            draw_egui_arrow(
+                painter,
+                map_pt(anchor),
+                map_pt(start),
+                Stroke::new(
+                    (shared.thickness * 0.85).max(2.0) * view_scale,
+                    shared.active_color,
+                ),
+                view_scale,
             );
-            if start.distance(curr) >= 8.0 {
-                let anchor = callout_anchor(preview_box, start);
-                draw_egui_arrow(
-                    painter,
-                    map_pt(anchor),
-                    map_pt(start),
-                    Stroke::new(
-                        (shared.thickness * 0.85).max(2.0) * view_scale,
-                        shared.active_color,
-                    ),
-                );
-            }
         }
     } else if let Some(pending) = &shared.pending_text {
         let (inner_w, inner_h, _, _, _) =
@@ -83,14 +87,16 @@ pub(super) fn draw_text_callout_preview(
         }
         if let Some(target) = pending.arrow_to {
             let anchor = callout_anchor(live_box, target);
+            let (arrow_thick, arrow_col) = match &pending.original {
+                Some((_, Annotation::Text { thickness, color, .. })) => (*thickness, *color),
+                _ => (shared.thickness, shared.active_color),
+            };
             draw_egui_arrow(
                 painter,
                 map_pt(anchor),
                 map_pt(target),
-                Stroke::new(
-                    (shared.thickness * 0.85).max(2.0) * view_scale,
-                    shared.active_color,
-                ),
+                Stroke::new((arrow_thick * 0.85).max(2.0) * view_scale, arrow_col),
+                view_scale,
             );
         }
     }
@@ -130,6 +136,10 @@ pub(super) fn draw_inline_text_editor(
             .y
             .clamp(8.0, (local_rect.max.y - frame_h - 8.0).max(8.0)),
     );
+    let edit_color = match &pending.original {
+        Some((_, Annotation::Text { color, .. })) => *color,
+        _ => shared.active_color,
+    };
     let h_align = pending.placement.h_align();
     let just_opened = pending.just_opened;
     pending.just_opened = false;
@@ -159,7 +169,7 @@ pub(super) fn draw_inline_text_editor(
                             egui::FontFamily::Name(edit_font.egui_family().into()),
                         ))
                         .horizontal_align(h_align)
-                        .text_color(shared.active_color)
+                        .text_color(edit_color)
                         .frame(false);
                     let resp = ui.add(edit);
                     if just_opened {
@@ -286,16 +296,56 @@ pub(super) fn draw_floating_toolbar(
                 .rect_filled(grip_pill, CornerRadius::same(2), grip_col);
 
             let t = Strings::for_lang(shared.lang);
+            let tip_pen = Strings::with_mod(t.tool_pen);
+            let tip_marker = Strings::with_mod(t.tool_marker);
+            let tip_line = Strings::with_mod(t.tool_line);
+            let tip_arrow = Strings::with_mod(t.tool_arrow);
             let tip_ellipse = Strings::with_mod(t.tool_ellipse);
             let tip_rect = Strings::with_mod(t.tool_rect);
             let tip_blur = Strings::with_mod(t.tool_blur);
 
-            let tools: [(Tool, &str, &str, fn(&egui::Painter, Rect, Color32)); 10] = [
+            let tools: [ToolEntry<'_>; 10] = [
                 (Tool::Move, "t_move", t.tool_move, icons::draw_move_icon),
-                (Tool::Pen, "t_pen", t.tool_pen, icons::draw_pen_icon),
-                (Tool::Marker, "t_marker", t.tool_marker, icons::draw_marker_icon),
-                (Tool::Line, "t_line", t.tool_line, icons::draw_line_icon),
-                (Tool::Arrow, "t_arrow", t.tool_arrow, icons::draw_arrow_icon),
+                (
+                    Tool::Pen,
+                    "t_pen",
+                    &tip_pen,
+                    if cmd_held {
+                        |p, r, c| icons::draw_pen_icon(p, r, c, true)
+                    } else {
+                        |p, r, c| icons::draw_pen_icon(p, r, c, false)
+                    },
+                ),
+                (
+                    Tool::Marker,
+                    "t_marker",
+                    &tip_marker,
+                    if cmd_held {
+                        |p, r, c| icons::draw_marker_icon(p, r, c, true)
+                    } else {
+                        |p, r, c| icons::draw_marker_icon(p, r, c, false)
+                    },
+                ),
+                (
+                    Tool::Line,
+                    "t_line",
+                    &tip_line,
+                    if cmd_held {
+                        |p, r, c| icons::draw_line_icon(p, r, c, true)
+                    } else {
+                        |p, r, c| icons::draw_line_icon(p, r, c, false)
+                    },
+                ),
+                (
+                    Tool::Arrow,
+                    "t_arrow",
+                    &tip_arrow,
+                    if cmd_held {
+                        |p, r, c| icons::draw_arrow_icon(p, r, c, true)
+                    } else {
+                        |p, r, c| icons::draw_arrow_icon(p, r, c, false)
+                    },
+                ),
                 (Tool::Text, "t_text", t.tool_text, icons::draw_text_icon),
                 (
                     Tool::Ellipse,
@@ -353,7 +403,7 @@ pub(super) fn draw_floating_toolbar(
                                     btn_sz,
                                     true,
                                     &tools,
-                                    &t,
+                                    t,
                                     shared,
                                     &mut outcome,
                                 );
@@ -418,7 +468,7 @@ pub(super) fn draw_floating_toolbar(
                                     btn_sz,
                                     false,
                                     &tools,
-                                    &t,
+                                    t,
                                     shared,
                                     &mut outcome,
                                 );
@@ -512,7 +562,7 @@ fn render_tool_and_action_buttons(
     ui: &mut egui::Ui,
     btn_sz: Vec2,
     vertical_bar: bool,
-    tools: &[(Tool, &str, &str, fn(&egui::Painter, Rect, Color32)); 10],
+    tools: &[ToolEntry<'_>],
     t: &Strings,
     shared: &mut OverlayShared,
     outcome: &mut Option<OverlayOutcome>,

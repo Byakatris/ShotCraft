@@ -18,7 +18,7 @@ pub fn draw_move_icon(p: &egui::Painter, r: Rect, c: Color32) {
     ));
 }
 
-pub fn draw_pen_icon(p: &egui::Painter, r: Rect, c: Color32) {
+pub fn draw_pen_icon(p: &egui::Painter, r: Rect, c: Color32, dashed: bool) {
     let pt = |x: f32, y: f32| Pos2::new(r.left() + r.width() * x, r.top() + r.height() * y);
 
     // Sharp pencil tip at bottom-left
@@ -47,10 +47,17 @@ pub fn draw_pen_icon(p: &egui::Painter, r: Rect, c: Color32) {
     ));
     // Ferrule / eraser band near top-right
     p.line_segment([pt(0.60, 0.26), pt(0.74, 0.40)], Stroke::new(1.5_f32, c));
+
+    if dashed {
+        let stroke = Stroke::new(1.7_f32, c);
+        p.line_segment([pt(0.29, 0.87), pt(0.41, 0.87)], stroke);
+        p.line_segment([pt(0.51, 0.87), pt(0.63, 0.87)], stroke);
+        p.line_segment([pt(0.73, 0.87), pt(0.85, 0.87)], stroke);
+    }
 }
 
 /// Wide angled chisel-tip highlighter marker (without underline).
-pub fn draw_marker_icon(p: &egui::Painter, r: Rect, c: Color32) {
+pub fn draw_marker_icon(p: &egui::Painter, r: Rect, c: Color32, dashed: bool) {
     let pt = |x: f32, y: f32| Pos2::new(r.left() + r.width() * x, r.top() + r.height() * y);
 
     // Wide angled rectangular barrel (45 deg)
@@ -74,20 +81,43 @@ pub fn draw_marker_icon(p: &egui::Painter, r: Rect, c: Color32) {
         pt(0.14, 0.79),
     ];
     p.add(egui::Shape::convex_polygon(tip, c, Stroke::NONE));
+
+    if dashed {
+        let mark_col = Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), 190);
+        let stroke = Stroke::new(2.8_f32, mark_col);
+        p.line_segment([pt(0.36, 0.85), pt(0.54, 0.85)], stroke);
+        p.line_segment([pt(0.68, 0.85), pt(0.86, 0.85)], stroke);
+    }
 }
 
-pub fn draw_line_icon(p: &egui::Painter, r: Rect, c: Color32) {
+pub fn draw_line_icon(p: &egui::Painter, r: Rect, c: Color32, dashed: bool) {
     let a = Pos2::new(r.left() + r.width() * 0.20, r.bottom() - r.height() * 0.20);
     let b = Pos2::new(r.right() - r.width() * 0.20, r.top() + r.height() * 0.20);
-    p.line_segment([a, b], Stroke::new(2.2_f32, c));
+    if dashed {
+        let d = b - a;
+        let stroke = Stroke::new(2.1_f32, c);
+        p.line_segment([a, a + d * 0.22], stroke);
+        p.line_segment([a + d * 0.39, a + d * 0.61], stroke);
+        p.line_segment([a + d * 0.78, b], stroke);
+    } else {
+        p.line_segment([a, b], Stroke::new(2.2_f32, c));
+    }
     p.circle_filled(a, 2.3, c);
     p.circle_filled(b, 2.3, c);
 }
 
-pub fn draw_arrow_icon(p: &egui::Painter, r: Rect, c: Color32) {
+pub fn draw_arrow_icon(p: &egui::Painter, r: Rect, c: Color32, dashed: bool) {
     let a = Pos2::new(r.left() + r.width() * 0.20, r.bottom() - r.height() * 0.20);
     let b = Pos2::new(r.right() - r.width() * 0.18, r.top() + r.height() * 0.18);
-    p.line_segment([a, b], Stroke::new(2.2_f32, c));
+    if dashed {
+        let d = b - a;
+        let stroke = Stroke::new(2.1_f32, c);
+        p.line_segment([a, a + d * 0.24], stroke);
+        p.line_segment([a + d * 0.44, a + d * 0.68], stroke);
+        p.line_segment([a + d * 0.84, b], stroke);
+    } else {
+        p.line_segment([a, b], Stroke::new(2.2_f32, c));
+    }
     p.line_segment(
         [b, Pos2::new(b.x - r.width() * 0.34, b.y)],
         Stroke::new(2.2_f32, c),

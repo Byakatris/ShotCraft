@@ -283,16 +283,16 @@ impl OverlayWindow {
             #[cfg(target_os = "macos")]
             {
                 use raw_window_handle::HasWindowHandle;
-                if let Ok(handle) = p.gl_win.window.window_handle() {
-                    if let raw_window_handle::RawWindowHandle::AppKit(appkit) = handle.as_raw() {
-                        unsafe {
-                            let ns_view = appkit.ns_view.as_ptr() as *mut objc2::runtime::AnyObject;
-                            let ns_win: *mut objc2::runtime::AnyObject =
-                                objc2::msg_send![ns_view, window];
-                            if !ns_win.is_null() {
-                                let nil: *mut objc2::runtime::AnyObject = std::ptr::null_mut();
-                                let _: () = objc2::msg_send![ns_win, orderOut: nil];
-                            }
+                if let Ok(handle) = p.gl_win.window.window_handle()
+                    && let raw_window_handle::RawWindowHandle::AppKit(appkit) = handle.as_raw()
+                {
+                    unsafe {
+                        let ns_view = appkit.ns_view.as_ptr() as *mut objc2::runtime::AnyObject;
+                        let ns_win: *mut objc2::runtime::AnyObject =
+                            objc2::msg_send![ns_view, window];
+                        if !ns_win.is_null() {
+                            let nil: *mut objc2::runtime::AnyObject = std::ptr::null_mut();
+                            let _: () = objc2::msg_send![ns_win, orderOut: nil];
                         }
                     }
                 }
@@ -343,7 +343,14 @@ impl OverlayWindow {
         )
     }
 
-    fn request_all_redraws(&self) {
+    pub fn next_wakeup_at(&self) -> Option<Instant> {
+        self.shared
+            .status_error
+            .as_ref()
+            .map(|(_, ts)| *ts + Duration::from_secs(5))
+    }
+
+    pub fn request_all_redraws(&self) {
         for p in &self.panes {
             p.gl_win.window.request_redraw();
         }
@@ -370,8 +377,6 @@ impl OverlayWindow {
             self.shared.hover_pos = Some(pane.to_global(local));
             if self.shared.drag_action.is_some() || self.shared.mode != Mode::Annotating {
                 self.request_all_redraws();
-            } else {
-                pane.gl_win.window.request_redraw();
             }
         }
 
@@ -459,7 +464,14 @@ impl OverlayWindow {
 
         let repaint = self.panes[pane_idx].gl_win.on_window_event(event);
         if repaint {
-            self.request_all_redraws();
+            if self.shared.drag_action.is_some()
+                || self.shared.mode != Mode::Annotating
+                || self.shared.pending_text.is_some()
+            {
+                self.request_all_redraws();
+            } else {
+                self.panes[pane_idx].gl_win.window.request_redraw();
+            }
         }
 
         if matches!(event, WindowEvent::RedrawRequested) {
@@ -577,6 +589,10 @@ impl OverlayShared {
     }
 
     pub(super) fn undo(&mut self) {
+        if self.pending_text.is_some() {
+            self.cancel_pending_text();
+            return;
+        }
         let Some((prev_anns, prev_step)) = self.undo_stack.pop() else {
             return;
         };
@@ -592,6 +608,12 @@ impl OverlayShared {
     }
 
     pub(super) fn redo(&mut self) {
+        if self.redo_stack.is_empty() {
+            return;
+        }
+        if self.pending_text.is_some() {
+            self.cancel_pending_text();
+        }
         let Some((next_anns, next_step)) = self.redo_stack.pop() else {
             return;
         };
@@ -690,13 +712,13 @@ impl OverlayShared {
     }
 
     pub(super) fn cancel_pending_text(&mut self) {
-        if let Some(pending) = self.pending_text.take() {
-            if let Some((orig_idx, orig_ann)) = pending.original {
-                let insert_at = orig_idx.min(self.annotations.len());
-                self.annotations.insert(insert_at, orig_ann);
-                self.last_edited_idx = Some(insert_at);
-                self.rebake_blurs_from(insert_at);
-            }
+        if let Some(pending) = self.pending_text.take()
+            && let Some((orig_idx, orig_ann)) = pending.original
+        {
+            let insert_at = orig_idx.min(self.annotations.len());
+            self.annotations.insert(insert_at, orig_ann);
+            self.last_edited_idx = Some(insert_at);
+            self.rebake_blurs_from(insert_at);
         }
     }
 
@@ -982,10 +1004,10 @@ impl OverlayPane {
         let mon_offset = self.mon_offset;
         let mon_scale = self.mon_scale;
 
-        if let Some((_, ts)) = &shared.status_error {
-            if ts.elapsed() > Duration::from_secs(5) {
-                shared.status_error = None;
-            }
+        if let Some((_, ts)) = &shared.status_error
+            && ts.elapsed() > Duration::from_secs(5)
+        {
+            shared.status_error = None;
         }
 
         let blur_patch_ids = &self.blur_tex_ids;
@@ -1019,22 +1041,20 @@ impl OverlayPane {
                 } else if !shared.live_draw
                     && shared.selection.is_some()
                     && shared.mode == Mode::Annotating
+                    && shared.export_and_copy()
                 {
-                    if shared.export_and_copy() {
-                        outcome = OverlayOutcome::Close;
-                        return;
-                    }
+                    outcome = OverlayOutcome::Close;
+                    return;
                 }
             }
-            if del {
-                if let Some(idx) = shared.selected_annotation.take() {
-                    if idx < shared.annotations.len() {
-                        shared.push_undo_snapshot();
-                        shared.annotations.remove(idx);
-                        shared.last_edited_idx = None;
-                        shared.rebake_blurs_from(idx);
-                    }
-                }
+            if del
+                && let Some(idx) = shared.selected_annotation.take()
+                && idx < shared.annotations.len()
+            {
+                shared.push_undo_snapshot();
+                shared.annotations.remove(idx);
+                shared.last_edited_idx = None;
+                shared.rebake_blurs_from(idx);
             }
 
             // 1. Canvas + selection + annotations + pointer handling
@@ -1132,40 +1152,40 @@ impl OverlayPane {
                                 );
                             }
 
-                            if shared.mode == Mode::Selecting {
-                                if let Some(hover_global) = shared.hover_pos {
-                                    let hover = self.global_to_local(hover_global);
-                                    let dark = Color32::from_rgba_unmultiplied(0, 0, 0, 95);
-                                    let light = Color32::from_rgba_unmultiplied(255, 255, 255, 130);
-                                    painter.line_segment(
-                                        [
-                                            Pos2::new(0.0, hover.y + 1.0),
-                                            Pos2::new(local_rect.max.x, hover.y + 1.0),
-                                        ],
-                                        Stroke::new(1.0_f32, dark),
-                                    );
-                                    painter.line_segment(
-                                        [
-                                            Pos2::new(hover.x + 1.0, 0.0),
-                                            Pos2::new(hover.x + 1.0, local_rect.max.y),
-                                        ],
-                                        Stroke::new(1.0_f32, dark),
-                                    );
-                                    painter.line_segment(
-                                        [
-                                            Pos2::new(0.0, hover.y),
-                                            Pos2::new(local_rect.max.x, hover.y),
-                                        ],
-                                        Stroke::new(1.0_f32, light),
-                                    );
-                                    painter.line_segment(
-                                        [
-                                            Pos2::new(hover.x, 0.0),
-                                            Pos2::new(hover.x, local_rect.max.y),
-                                        ],
-                                        Stroke::new(1.0_f32, light),
-                                    );
-                                }
+                            if shared.mode == Mode::Selecting
+                                && let Some(hover_global) = shared.hover_pos
+                            {
+                                let hover = self.global_to_local(hover_global);
+                                let dark = Color32::from_rgba_unmultiplied(0, 0, 0, 95);
+                                let light = Color32::from_rgba_unmultiplied(255, 255, 255, 130);
+                                painter.line_segment(
+                                    [
+                                        Pos2::new(0.0, hover.y + 1.0),
+                                        Pos2::new(local_rect.max.x, hover.y + 1.0),
+                                    ],
+                                    Stroke::new(1.0_f32, dark),
+                                );
+                                painter.line_segment(
+                                    [
+                                        Pos2::new(hover.x + 1.0, 0.0),
+                                        Pos2::new(hover.x + 1.0, local_rect.max.y),
+                                    ],
+                                    Stroke::new(1.0_f32, dark),
+                                );
+                                painter.line_segment(
+                                    [
+                                        Pos2::new(0.0, hover.y),
+                                        Pos2::new(local_rect.max.x, hover.y),
+                                    ],
+                                    Stroke::new(1.0_f32, light),
+                                );
+                                painter.line_segment(
+                                    [
+                                        Pos2::new(hover.x, 0.0),
+                                        Pos2::new(hover.x, local_rect.max.y),
+                                    ],
+                                    Stroke::new(1.0_f32, light),
+                                );
                             }
                         }
                     }
@@ -1230,17 +1250,18 @@ impl OverlayPane {
             toolbar::draw_inline_text_editor(ctx, shared, local_rect, offset, view_scale);
 
             // 3. Floating Toolbar
-            if draw_toolbar_here && shared.mode == Mode::Annotating {
-                if let Some(sel_global) = shared.selection {
-                    let sel_local = Rect::from_min_max(
-                        self.global_to_local(sel_global.min),
-                        self.global_to_local(sel_global.max),
-                    );
-                    if let Some(action) =
-                        toolbar::draw_floating_toolbar(ctx, shared, sel_local, local_rect, cmd_held)
-                    {
-                        outcome = action;
-                    }
+            if draw_toolbar_here
+                && shared.mode == Mode::Annotating
+                && let Some(sel_global) = shared.selection
+            {
+                let sel_local = Rect::from_min_max(
+                    self.global_to_local(sel_global.min),
+                    self.global_to_local(sel_global.max),
+                );
+                if let Some(action) =
+                    toolbar::draw_floating_toolbar(ctx, shared, sel_local, local_rect, cmd_held)
+                {
+                    outcome = action;
                 }
             }
 
@@ -1259,7 +1280,7 @@ impl OverlayPane {
             return OverlayOutcome::CaptureLiveBlurBackground;
         }
 
-        if needs_repaint || shared.status_error.is_some() {
+        if needs_repaint {
             self.gl_win.window.request_redraw();
         }
 
@@ -1417,6 +1438,7 @@ mod tests {
             end: Pos2::new(50.0, 50.0),
             color: Color32::RED,
             thickness: 3.0,
+            dashed: false,
         });
 
         assert_eq!(s.annotations.len(), 2);
@@ -1435,5 +1457,64 @@ mod tests {
         // New mutation clears redo stack
         s.push_undo_snapshot();
         assert!(s.redo_stack.is_empty());
+    }
+
+    #[test]
+    fn undo_and_redo_preserve_text_and_cancel_open_editor() {
+        let mut s = test_shared();
+        s.push_undo_snapshot();
+        s.annotations.push(Annotation::Step {
+            pos: Pos2::new(20.0, 20.0),
+            number: 1,
+            color: Color32::WHITE,
+            radius: 14.0,
+        });
+        s.push_undo_snapshot();
+        s.annotations.push(Annotation::Text {
+            pos: Pos2::new(40.0, 40.0),
+            text: "Orig".into(),
+            color: Color32::WHITE,
+            size: 20.0,
+            arrow_to: None,
+            thickness: 3.0,
+            placement: TextPlacement::LeftTop,
+            font: TextFont::Roboto,
+            box_size: None,
+        });
+
+        // 1) Re-editing an existing text annotation and hitting toolbar Undo restores Orig safely
+        s.open_text_for_edit(1);
+        assert_eq!(s.annotations.len(), 1);
+        assert!(s.pending_text.is_some());
+        s.undo();
+        assert!(s.pending_text.is_none());
+        assert_eq!(s.annotations.len(), 2);
+
+        // 2) Next Undo pops the annotation creation snapshot cleanly
+        s.undo();
+        assert_eq!(s.annotations.len(), 1);
+
+        // 3) Redo while a fresh draft is open cancels the draft cleanly and restores redo snapshot
+        s.pending_text = Some(PendingText {
+            pos: Pos2::new(30.0, 30.0),
+            arrow_to: None,
+            placement: TextPlacement::LeftTop,
+            buf: "draft".into(),
+            just_opened: false,
+            original: None,
+        });
+        s.redo();
+        assert!(s.pending_text.is_none());
+        assert_eq!(s.annotations.len(), 2);
+    }
+
+    #[test]
+    fn status_error_schedules_five_second_expiry() {
+        let mut s = test_shared();
+        assert!(s.status_error.is_none());
+        let ts = Instant::now();
+        s.status_error = Some(("err".into(), ts));
+        let expiry = s.status_error.as_ref().map(|(_, t)| *t + Duration::from_secs(5));
+        assert_eq!(expiry, Some(ts + Duration::from_secs(5)));
     }
 }

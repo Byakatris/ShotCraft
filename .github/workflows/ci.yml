@@ -5,6 +5,13 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   check-and-test:
     strategy:
@@ -19,7 +26,11 @@ jobs:
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
         with:
+          components: clippy
           targets: ${{ matrix.os == 'windows-11-arm' && 'aarch64-pc-windows-msvc' || '' }}
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
 
       - name: Install Linux GUI & capture dependencies
         if: matrix.os == 'ubuntu-24.04'
@@ -46,14 +57,16 @@ jobs:
             libxinerama-dev \
             xvfb
 
-      - name: Check all targets
+      - name: Check & Clippy all targets
         env:
           RUSTFLAGS: "-D warnings"
         run: |
           if [ "${{ matrix.os }}" = "windows-11-arm" ]; then
             cargo check --all-targets --target aarch64-pc-windows-msvc
+            cargo clippy --all-targets --target aarch64-pc-windows-msvc -- -D warnings
           else
             cargo check --all-targets
+            cargo clippy --all-targets -- -D warnings
           fi
         shell: bash
 

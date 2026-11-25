@@ -16,6 +16,7 @@ mod tray;
 mod updater;
 
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use global_hotkey::{GlobalHotKeyEvent, HotKeyState};
 use muda::MenuEvent;
@@ -64,7 +65,66 @@ struct PendingLiveCapture {
     annotations: Vec<Annotation>,
     step_counter: u32,
     live_virt: Option<CapturedScreen>,
-    ready_at: std::time::Instant,
+    ready_at: Instant,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CliAction {
+    RunApp,
+    ShowVersion,
+    ShowHelp,
+    SmokeTest,
+    UnknownArg(String),
+}
+
+fn parse_cli_args(args: &[String]) -> CliAction {
+    if let Some(first) = args.first() {
+        match first.as_str() {
+            "--version" | "-V" => CliAction::ShowVersion,
+            "--help" | "-h" => CliAction::ShowHelp,
+            "--smoke-test" => CliAction::SmokeTest,
+            other => CliAction::UnknownArg(other.to_string()),
+        }
+    } else {
+        CliAction::RunApp
+    }
+}
+
+pub(crate) fn remap_live_annotations(
+    anns: &mut [Annotation],
+    live_virt: &CapturedScreen,
+    screen: &CapturedScreen,
+) {
+    if anns.is_empty() {
+        return;
+    }
+    if live_virt.physical_coords && screen.physical_coords {
+        let scale_ratio = live_virt.scale_factor / screen.scale_factor.max(0.1);
+        let shift_x = (live_virt.x - screen.x) as f32 / screen.scale_factor.max(0.1);
+        let shift_y = (live_virt.y - screen.y) as f32 / screen.scale_factor.max(0.1);
+        for ann in anns {
+            if (scale_ratio - 1.0).abs() > 1e-3 {
+                ann.scale_coords(scale_ratio);
+            }
+            ann.translate(egui::Vec2::new(shift_x, shift_y));
+        }
+    } else {
+        let delta = egui::Vec2::new(
+            (live_virt.x - screen.x) as f32,
+            (live_virt.y - screen.y) as f32,
+        );
+        for ann in anns {
+            ann.translate(delta);
+        }
+    }
+}
+
+pub(crate) fn should_ignore_background_update(state: &updater::UpdateState, manual: bool) -> bool {
+    !manual
+        && matches!(
+            state,
+            updater::UpdateState::Downloading(_) | updater::UpdateState::Installed(_)
+        )
 }
 
 struct ShotCraftApp {
@@ -107,13 +167,19 @@ impl ShotCraftApp {
         }
     }
 
-    fn refresh_tray(&mut self) {
-        let ver = self
-            .available_release
-            .as_ref()
-            .map(|r| r.version.clone());
+    fn refresh_tray_menu(&mut self) {
+        let ver = self.available_version().map(str::to_owned);
+        if let Some(tray) = &mut self.tray
+            && let Err(e) = tray.update_menu(&self.settings, ver.as_deref())
+        {
+            diagnostics::log_error("tray.menu", &e);
+        }
+    }
+
+    fn refresh_tray_hotkeys(&mut self) {
+        self.refresh_tray_menu();
         if let Some(tray) = &mut self.tray {
-            let _ = tray.apply_settings(&self.settings, ver.as_deref());
+            tray.update_hotkeys(&self.settings);
         }
     }
 
@@ -163,7 +229,7 @@ impl ShotCraftApp {
                     annotations: Vec::new(),
                     step_counter: 1,
                     live_virt: None,
-                    ready_at: std::time::Instant::now() + std::time::Duration::from_millis(90),
+                    ready_at: Instant::now() + Duration::from_millis(90),
                 });
                 return true;
             }
@@ -178,7 +244,7 @@ impl ShotCraftApp {
                 annotations,
                 step_counter,
                 live_virt: Some(live_virt),
-                ready_at: std::time::Instant::now() + std::time::Duration::from_millis(90),
+                ready_at: Instant::now() + Duration::from_millis(90),
             });
         }
         self.overlay = None;
@@ -195,6 +261,9 @@ impl ShotCraftApp {
         }) {
             return;
         }
+        if self.overlay.is_some() {
+            return;
+        }
         self.finish_fullscreen_capture(event_loop, None, true, true);
     }
 
@@ -208,45 +277,21 @@ impl ShotCraftApp {
         let t = Strings::for_lang(self.settings.language);
         match capture_primary_screen() {
             Ok(mut screen) => {
-                if let Some((mut anns, live_virt)) = live_state {
-                    if !anns.is_empty() {
-                        if live_virt.physical_coords && screen.physical_coords {
-                            let scale_ratio =
-                                live_virt.scale_factor / screen.scale_factor.max(0.1);
-                            let shift_x =
-                                (live_virt.x - screen.x) as f32 / screen.scale_factor.max(0.1);
-                            let shift_y =
-                                (live_virt.y - screen.y) as f32 / screen.scale_factor.max(0.1);
-                            for ann in &mut anns {
-                                if (scale_ratio - 1.0).abs() > 1e-3 {
-                                    ann.scale_coords(scale_ratio);
-                                }
-                                ann.translate(egui::Vec2::new(shift_x, shift_y));
-                            }
-                        } else {
-                            let delta = egui::Vec2::new(
-                                (live_virt.x - screen.x) as f32,
-                                (live_virt.y - screen.y) as f32,
-                            );
-                            for ann in &mut anns {
-                                ann.translate(delta);
-                            }
-                        }
-                        let sel = egui::Rect::from_min_size(
-                            egui::Pos2::ZERO,
-                            egui::Vec2::new(screen.logical_width, screen.logical_height),
-                        );
-                        screen.image =
-                            render_export(&screen.image, sel, screen.scale_factor, &anns);
-                    }
+                if let Some((mut anns, live_virt)) = live_state
+                    && !anns.is_empty()
+                {
+                    remap_live_annotations(&mut anns, &live_virt, &screen);
+                    let sel = egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::Vec2::new(screen.logical_width, screen.logical_height),
+                    );
+                    screen.image = render_export(&screen.image, sel, screen.scale_factor, &anns);
                 }
-                if do_copy {
-                    if let Err(e) = copy_to_clipboard(&screen.image) {
-                        diagnostics::notify_error(
-                            "ShotCraft",
-                            &format!("{}: {e}", t.err_copy_failed),
-                        );
-                    }
+                if do_copy && let Err(e) = copy_to_clipboard(&screen.image) {
+                    diagnostics::notify_error(
+                        "ShotCraft",
+                        &format!("{}: {e}", t.err_copy_failed),
+                    );
                 }
                 if do_save {
                     match save_to_dir_async(screen.image.clone(), &self.settings.save_dir) {
@@ -450,6 +495,7 @@ impl ApplicationHandler<AppEvent> for ShotCraftApp {
                 Err(e) => {
                     diagnostics::notify_error("ShotCraft Tray Error", &e);
                     event_loop.exit();
+                    return;
                 }
             }
         }
@@ -457,7 +503,7 @@ impl ApplicationHandler<AppEvent> for ShotCraftApp {
             self.startup_update_checked = true;
             let proxy = self.event_proxy.clone();
             std::thread::spawn(move || {
-                std::thread::sleep(std::time::Duration::from_secs(4));
+                std::thread::sleep(Duration::from_secs(4));
                 let result = updater::check_for_updates();
                 let _ = proxy.send_event(AppEvent::UpdateCheckFinished {
                     result,
@@ -470,12 +516,11 @@ impl ApplicationHandler<AppEvent> for ShotCraftApp {
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: AppEvent) {
         match event {
             AppEvent::FolderPicked(dir) => {
-                let mut changed = false;
                 if let Some(settings_win) = &mut self.settings_win {
-                    changed = settings_win.on_folder_picked(dir, &mut self.settings);
-                }
-                if changed {
-                    self.refresh_tray();
+                    settings_win.on_folder_picked(dir, &mut self.settings);
+                } else if let Some(d) = dir {
+                    self.settings.save_dir = d;
+                    self.settings.save();
                 }
             }
             AppEvent::TriggerUpdateCheck => {
@@ -485,6 +530,9 @@ impl ApplicationHandler<AppEvent> for ShotCraftApp {
                 self.spawn_update_install();
             }
             AppEvent::UpdateCheckFinished { result, manual } => {
+                if should_ignore_background_update(&self.update_state, manual) {
+                    return;
+                }
                 let t = Strings::for_lang(self.settings.language);
                 match result {
                     Ok(Some(info)) => {
@@ -494,7 +542,7 @@ impl ApplicationHandler<AppEvent> for ShotCraftApp {
                         );
                         self.available_release = Some(info.clone());
                         self.sync_update_state(updater::UpdateState::Available(info));
-                        self.refresh_tray();
+                        self.refresh_tray_menu();
                         if manual && self.settings_win.is_none() {
                             self.open_settings(event_loop);
                         }
@@ -502,7 +550,7 @@ impl ApplicationHandler<AppEvent> for ShotCraftApp {
                     Ok(None) => {
                         self.available_release = None;
                         self.sync_update_state(updater::UpdateState::UpToDate);
-                        self.refresh_tray();
+                        self.refresh_tray_menu();
                         if manual && self.settings_win.is_none() {
                             diagnostics::notify_info(
                                 "ShotCraft",
@@ -533,7 +581,7 @@ impl ApplicationHandler<AppEvent> for ShotCraftApp {
                         &format!("Applying v{ver} update and restarting"),
                     );
                     self.sync_update_state(updater::UpdateState::Installed(ver));
-                    wait_pending_saves();
+                    self.save_overlay_tool_prefs();
                     self.overlay = None;
                     self.settings_win = None;
                     event_loop.exit();
@@ -550,69 +598,37 @@ impl ApplicationHandler<AppEvent> for ShotCraftApp {
                     self.sync_update_state(updater::UpdateState::Failed(err));
                 }
             },
-            AppEvent::Menu(ev) => {
-                enum MenuChoice {
-                    Full,
-                    Area,
-                    Window,
-                    LiveDraw,
-                    OpenFolder,
-                    Settings,
-                    CheckUpdates,
-                    Quit,
-                    None,
-                }
-                let choice = if let Some(tray) = &self.tray {
-                    if ev.id == tray.id_capture_full {
-                        MenuChoice::Full
-                    } else if ev.id == tray.id_capture_area {
-                        MenuChoice::Area
-                    } else if ev.id == tray.id_capture_window {
-                        MenuChoice::Window
-                    } else if ev.id == tray.id_live_draw {
-                        MenuChoice::LiveDraw
-                    } else if ev.id == tray.id_open_folder {
-                        MenuChoice::OpenFolder
-                    } else if ev.id == tray.id_settings {
-                        MenuChoice::Settings
-                    } else if ev.id == tray.id_check_updates {
-                        MenuChoice::CheckUpdates
-                    } else if ev.id == tray.id_quit {
-                        MenuChoice::Quit
+            AppEvent::Menu(ev) => match ev.id.0.as_str() {
+                tray::ID_CAPTURE_FULL => self.capture_instant_fullscreen(event_loop),
+                tray::ID_CAPTURE_AREA => self.start_area_capture(event_loop),
+                tray::ID_CAPTURE_WINDOW => self.start_window_capture(event_loop),
+                tray::ID_LIVE_DRAW => self.start_live_draw(event_loop),
+                tray::ID_OPEN_FOLDER => open_folder(&self.settings.save_dir),
+                tray::ID_SETTINGS => self.open_settings(event_loop),
+                tray::ID_CHECK_UPDATES => {
+                    if self.available_release.is_some() {
+                        self.spawn_update_install();
                     } else {
-                        MenuChoice::None
+                        self.spawn_update_check(true);
                     }
-                } else {
-                    MenuChoice::None
-                };
-                match choice {
-                    MenuChoice::Full => self.capture_instant_fullscreen(event_loop),
-                    MenuChoice::Area => self.start_area_capture(event_loop),
-                    MenuChoice::Window => self.start_window_capture(event_loop),
-                    MenuChoice::LiveDraw => self.start_live_draw(event_loop),
-                    MenuChoice::OpenFolder => open_folder(&self.settings.save_dir),
-                    MenuChoice::Settings => self.open_settings(event_loop),
-                    MenuChoice::CheckUpdates => {
-                        if self.available_release.is_some() {
-                            self.spawn_update_install();
-                        } else {
-                            self.spawn_update_check(true);
-                        }
-                    }
-                    MenuChoice::Quit => event_loop.exit(),
-                    MenuChoice::None => {}
                 }
-            }
+                tray::ID_QUIT => {
+                    self.save_overlay_tool_prefs();
+                    event_loop.exit();
+                }
+                _ => {}
+            },
             AppEvent::HotKey(ev) => {
                 let Some(tray) = &self.tray else { return };
                 if ev.state == HotKeyState::Pressed {
-                    if ev.id == tray.hk_full_id {
+                    let id = Some(ev.id);
+                    if id == tray.hk_full_id {
                         self.capture_instant_fullscreen(event_loop);
-                    } else if ev.id == tray.hk_area_id {
+                    } else if id == tray.hk_area_id {
                         self.start_area_capture(event_loop);
-                    } else if ev.id == tray.hk_window_id {
+                    } else if id == tray.hk_window_id {
                         self.start_window_capture(event_loop);
-                    } else if ev.id == tray.hk_live_draw_id {
+                    } else if id == tray.hk_live_draw_id {
                         self.start_live_draw(event_loop);
                     }
                 }
@@ -627,7 +643,7 @@ impl ApplicationHandler<AppEvent> for ShotCraftApp {
         }
 
         if let Some(ready_at) = self.pending_live_capture.as_ref().map(|p| p.ready_at) {
-            if std::time::Instant::now() >= ready_at {
+            if Instant::now() >= ready_at {
                 if let Some(pending) = self.pending_live_capture.take() {
                     match pending.kind {
                         PendingCaptureKind::Fullscreen { copy, save } => {
@@ -679,15 +695,50 @@ impl ApplicationHandler<AppEvent> for ShotCraftApp {
         }
 
         if let Some(flash) = &self.flash {
-            flash.request_redraw();
-            event_loop.set_control_flow(ControlFlow::Poll);
-        } else {
-            #[cfg(target_os = "linux")]
+            let now = Instant::now();
+            let next = flash.next_frame_at();
+            if now >= next {
+                flash.request_redraw();
+            }
             event_loop.set_control_flow(ControlFlow::WaitUntil(
-                std::time::Instant::now() + std::time::Duration::from_millis(120),
+                next.max(now + Duration::from_millis(1)),
             ));
-            #[cfg(not(target_os = "linux"))]
-            event_loop.set_control_flow(ControlFlow::Wait);
+        } else {
+            let mut wake_until: Option<Instant> = None;
+            let now = Instant::now();
+            if let Some(overlay) = &self.overlay
+                && let Some(err_expiry) = overlay.next_wakeup_at()
+            {
+                let next_tick = if now >= err_expiry {
+                    overlay.request_all_redraws();
+                    now + Duration::from_millis(16)
+                } else {
+                    err_expiry
+                };
+                wake_until = Some(next_tick);
+            }
+            if let Some(settings_win) = &self.settings_win
+                && let Some(warn_expiry) = settings_win.next_wakeup_at()
+            {
+                let next_tick = if now >= warn_expiry {
+                    settings_win.request_redraw();
+                    now + Duration::from_millis(16)
+                } else {
+                    warn_expiry
+                };
+                wake_until = Some(wake_until.map_or(next_tick, |w| w.min(next_tick)));
+            }
+            // Pump gtk::main_iteration_do(false) periodically so tray-icon menus stay responsive on Linux.
+            #[cfg(target_os = "linux")]
+            {
+                let gtk_tick = Instant::now() + Duration::from_millis(120);
+                wake_until = Some(wake_until.map_or(gtk_tick, |w| w.min(gtk_tick)));
+            }
+            if let Some(deadline) = wake_until {
+                event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
+            } else {
+                event_loop.set_control_flow(ControlFlow::Wait);
+            }
         }
     }
 
@@ -697,53 +748,52 @@ impl ApplicationHandler<AppEvent> for ShotCraftApp {
         window_id: WindowId,
         event: WindowEvent,
     ) {
-        if let Some(flash) = &mut self.flash {
-            if flash.window_id() == window_id {
-                if flash.handle_window_event(&event) {
-                    self.flash = None;
-                }
-                return;
+        if let Some(flash) = &mut self.flash
+            && flash.window_id() == window_id
+        {
+            if flash.handle_window_event(&event) {
+                self.flash = None;
             }
+            return;
         }
 
-        if let Some(overlay) = &mut self.overlay {
-            if overlay.has_window_id(window_id) {
-                match overlay.handle_window_event(window_id, &event) {
-                    OverlayOutcome::KeepOpen => {}
-                    OverlayOutcome::Close => {
-                        self.save_overlay_tool_prefs();
-                        self.overlay = None;
-                    }
-                    OverlayOutcome::LiveCopy => {
-                        self.schedule_live_draw_capture(PendingCaptureKind::Fullscreen {
-                            copy: true,
-                            save: false,
-                        });
-                    }
-                    OverlayOutcome::LiveSave => {
-                        self.schedule_live_draw_capture(PendingCaptureKind::Fullscreen {
-                            copy: false,
-                            save: true,
-                        });
-                    }
-                    OverlayOutcome::CaptureLiveBlurBackground => {
-                        self.schedule_live_draw_capture(PendingCaptureKind::LiveBlurRefresh);
-                    }
+        if let Some(overlay) = &mut self.overlay
+            && overlay.has_window_id(window_id)
+        {
+            match overlay.handle_window_event(window_id, &event) {
+                OverlayOutcome::KeepOpen => {}
+                OverlayOutcome::Close => {
+                    self.save_overlay_tool_prefs();
+                    self.overlay = None;
                 }
-                return;
+                OverlayOutcome::LiveCopy => {
+                    self.schedule_live_draw_capture(PendingCaptureKind::Fullscreen {
+                        copy: true,
+                        save: false,
+                    });
+                }
+                OverlayOutcome::LiveSave => {
+                    self.schedule_live_draw_capture(PendingCaptureKind::Fullscreen {
+                        copy: false,
+                        save: true,
+                    });
+                }
+                OverlayOutcome::CaptureLiveBlurBackground => {
+                    self.schedule_live_draw_capture(PendingCaptureKind::LiveBlurRefresh);
+                }
             }
+            return;
         }
 
-        if let Some(settings_win) = &mut self.settings_win {
-            if settings_win.window_id() == window_id {
-                match settings_win.handle_window_event(&event, &mut self.settings) {
-                    SettingsOutcome::KeepOpen => {}
-                    SettingsOutcome::Updated => {
-                        self.refresh_tray();
-                    }
-                    SettingsOutcome::Close => {
-                        self.settings_win = None;
-                    }
+        if let Some(settings_win) = &mut self.settings_win
+            && settings_win.window_id() == window_id
+        {
+            match settings_win.handle_window_event(&event, &mut self.settings) {
+                SettingsOutcome::KeepOpen | SettingsOutcome::PrefsChanged => {}
+                SettingsOutcome::TrayMenuChanged => self.refresh_tray_menu(),
+                SettingsOutcome::HotkeysChanged => self.refresh_tray_hotkeys(),
+                SettingsOutcome::Close => {
+                    self.settings_win = None;
                 }
             }
         }
@@ -765,14 +815,14 @@ fn run_smoke_test() -> Result<(), String> {
         return Err("Hotkey mismatch after roundtrip".to_string());
     }
 
-    // 2. Updater release manifest parser check
-    let sample = r#"{"tag_name":"v9.9.9","html_url":"https://github.com/Byakatris/ShotCraft/releases/tag/v9.9.9","assets":[{"name":"ShotCraft-v9.9.dmg","size":2048,"browser_download_url":"https://github.com/Byakatris/ShotCraft/releases/download/v9.9.9/ShotCraft-v9.9.dmg"},{"name":"ShotCraft-v9.9-Setup.exe","size":2048,"browser_download_url":"https://github.com/Byakatris/ShotCraft/releases/download/v9.9.9/ShotCraft-v9.9-Setup.exe"},{"name":"ShotCraft-v9.9-arm64-Setup.exe","size":2048,"browser_download_url":"https://github.com/Byakatris/ShotCraft/releases/download/v9.9.9/ShotCraft-v9.9-arm64-Setup.exe"},{"name":"ShotCraft-v9.9-linux-x86_64.tar.gz","size":2048,"browser_download_url":"https://github.com/Byakatris/ShotCraft/releases/download/v9.9.9/ShotCraft-v9.9-linux-x86_64.tar.gz"}]}"#;
+    // 2. Updater release manifest parser check (covers all 5 asset types)
+    let sample = r#"{"tag_name":"v9.9.9","html_url":"https://github.com/Byakatris/ShotCraft/releases/tag/v9.9.9","assets":[{"name":"ShotCraft-v9.9.9.dmg","size":2048,"browser_download_url":"https://github.com/Byakatris/ShotCraft/releases/download/v9.9.9/ShotCraft-v9.9.9.dmg"},{"name":"ShotCraft-v9.9.9-Setup.exe","size":2048,"browser_download_url":"https://github.com/Byakatris/ShotCraft/releases/download/v9.9.9/ShotCraft-v9.9.9-Setup.exe"},{"name":"ShotCraft-v9.9.9-arm64-Setup.exe","size":2048,"browser_download_url":"https://github.com/Byakatris/ShotCraft/releases/download/v9.9.9/ShotCraft-v9.9.9-arm64-Setup.exe"},{"name":"ShotCraft-v9.9.9-linux-amd64.deb","size":2048,"browser_download_url":"https://github.com/Byakatris/ShotCraft/releases/download/v9.9.9/ShotCraft-v9.9.9-linux-amd64.deb"},{"name":"ShotCraft-v9.9.9-linux-x86_64.tar.gz","size":2048,"browser_download_url":"https://github.com/Byakatris/ShotCraft/releases/download/v9.9.9/ShotCraft-v9.9.9-linux-x86_64.tar.gz"}]}"#;
     let rel = updater::parse_github_release_json(sample, updater::current_platform_target())?;
     if !updater::is_newer_version(updater::CURRENT_VERSION, &rel.version) {
         return Err("Semver check failed".to_string());
     }
 
-    // 3. Annotation pipeline + PNG fast encoding into temp file
+    // 3. Annotation pipeline + PNG fast encoding & magic header verification
     let src = image::RgbaImage::from_pixel(160, 120, image::Rgba([24, 32, 48, 255]));
     let anns = vec![
         Annotation::Arrow {
@@ -780,6 +830,7 @@ fn run_smoke_test() -> Result<(), String> {
             end: egui::Pos2::new(90.0, 60.0),
             color: egui::Color32::from_rgb(255, 70, 70),
             thickness: 4.0,
+            dashed: true,
         },
         Annotation::Blur {
             rect: egui::Rect::from_min_max(
@@ -803,35 +854,55 @@ fn run_smoke_test() -> Result<(), String> {
         &anns,
     );
     let smoke_png = std::env::temp_dir().join(format!("shotcraft_smoke_{}.png", std::process::id()));
-    let f = std::fs::File::create(&smoke_png).map_err(|e| e.to_string())?;
-    crate::capture::encode_png_fast(&rendered, f)?;
+    let encode_res = (|| -> Result<(), String> {
+        let f = std::fs::File::create(&smoke_png).map_err(|e| e.to_string())?;
+        crate::capture::encode_png_fast(&rendered, f)?;
+        let bytes = std::fs::read(&smoke_png).map_err(|e| e.to_string())?;
+        if bytes.len() <= 64 || !bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+            return Err("Encoded smoke PNG failed header/size validation".to_string());
+        }
+        Ok(())
+    })();
     let _ = std::fs::remove_file(&smoke_png);
-    Ok(())
+    encode_res
 }
 
 fn main() {
-    for arg in std::env::args().skip(1) {
-        match arg.as_str() {
-            "--version" | "-V" => {
-                println!("ShotCraft v{}", env!("CARGO_PKG_VERSION"));
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    match parse_cli_args(&args) {
+        CliAction::ShowVersion => {
+            println!("ShotCraft v{}", env!("CARGO_PKG_VERSION"));
+            return;
+        }
+        CliAction::ShowHelp => {
+            println!(
+                "ShotCraft v{}\nUsage: shotcraft [--version | --smoke-test | --help]",
+                env!("CARGO_PKG_VERSION")
+            );
+            return;
+        }
+        CliAction::SmokeTest => match run_smoke_test() {
+            Ok(()) => {
+                println!("ShotCraft v{} smoke-test OK", env!("CARGO_PKG_VERSION"));
                 return;
             }
-            "--smoke-test" => match run_smoke_test() {
-                Ok(()) => {
-                    println!("ShotCraft v{} smoke-test OK", env!("CARGO_PKG_VERSION"));
-                    return;
-                }
-                Err(e) => {
-                    eprintln!("ShotCraft smoke-test FAILED: {e}");
-                    std::process::exit(1);
-                }
-            },
-            _ => {}
+            Err(e) => {
+                eprintln!("ShotCraft smoke-test FAILED: {e}");
+                std::process::exit(1);
+            }
+        },
+        CliAction::UnknownArg(arg) => {
+            eprintln!("Unknown option: {arg}\nTry: shotcraft --help");
+            std::process::exit(2);
         }
+        CliAction::RunApp => {}
     }
 
     #[cfg(target_os = "linux")]
-    let _ = gtk::init();
+    if let Err(e) = gtk::init() {
+        diagnostics::notify_error("ShotCraft", &format!("GTK initialization failed: {e}"));
+        return;
+    }
 
     let mut builder = EventLoop::<AppEvent>::with_user_event();
     #[cfg(target_os = "macos")]
@@ -859,4 +930,92 @@ fn main() {
         diagnostics::log_error("event_loop", &format!("Event loop error: {e}"));
     }
     wait_pending_saves();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use image::RgbaImage;
+
+    #[test]
+    fn cli_arg_parsing_handles_all_flags_and_unknowns() {
+        assert_eq!(parse_cli_args(&[]), CliAction::RunApp);
+        assert_eq!(parse_cli_args(&["--version".into()]), CliAction::ShowVersion);
+        assert_eq!(parse_cli_args(&["-V".into()]), CliAction::ShowVersion);
+        assert_eq!(parse_cli_args(&["--help".into()]), CliAction::ShowHelp);
+        assert_eq!(parse_cli_args(&["-h".into()]), CliAction::ShowHelp);
+        assert_eq!(parse_cli_args(&["--smoke-test".into()]), CliAction::SmokeTest);
+        assert_eq!(
+            parse_cli_args(&["--bogus".into()]),
+            CliAction::UnknownArg("--bogus".into())
+        );
+    }
+
+    #[test]
+    fn remap_live_annotations_scales_and_translates_across_dpi() {
+        let live_virt = CapturedScreen {
+            image: RgbaImage::new(1, 1),
+            x: 0,
+            y: 0,
+            logical_width: 2880.0,
+            logical_height: 1080.0,
+            scale_factor: 2.0,
+            physical_width: 5760,
+            physical_height: 2160,
+            physical_coords: true,
+        };
+        let screen = CapturedScreen {
+            image: RgbaImage::new(1, 1),
+            x: 3840,
+            y: 0,
+            logical_width: 1920.0,
+            logical_height: 1080.0,
+            scale_factor: 1.0,
+            physical_width: 1920,
+            physical_height: 1080,
+            physical_coords: true,
+        };
+        let mut anns = vec![Annotation::Line {
+            start: egui::Pos2::new(2000.0, 100.0),
+            end: egui::Pos2::new(2100.0, 200.0),
+            color: egui::Color32::RED,
+            thickness: 3.0,
+            dashed: false,
+        }];
+        remap_live_annotations(&mut anns, &live_virt, &screen);
+        match &anns[0] {
+            Annotation::Line {
+                start,
+                end,
+                thickness,
+                ..
+            } => {
+                assert!((start.x - 160.0).abs() < 0.01);
+                assert!((start.y - 200.0).abs() < 0.01);
+                assert!((end.x - 360.0).abs() < 0.01);
+                assert!((thickness - 6.0).abs() < 0.01);
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn background_update_check_never_clobbers_active_download() {
+        assert!(should_ignore_background_update(
+            &updater::UpdateState::Downloading("0.7.0".into()),
+            false
+        ));
+        assert!(should_ignore_background_update(
+            &updater::UpdateState::Installed("0.7.0".into()),
+            false
+        ));
+        assert!(!should_ignore_background_update(
+            &updater::UpdateState::Downloading("0.7.0".into()),
+            true
+        ));
+        assert!(!should_ignore_background_update(
+            &updater::UpdateState::Idle,
+            false
+        ));
+    }
 }

@@ -5,7 +5,7 @@ cd "$(dirname "$0")"
 
 APP_NAME="ShotCraft"
 APP_VERSION="$(grep -m1 '^version' Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')"
-APP_SHORT_VER="$(echo "${APP_VERSION}" | awk -F. '{print $1"."$2}')"
+APP_VER_NUM="${APP_VERSION%%[-+]*}"
 DIST_DIR="$(pwd)/dist"
 STAGE_DIR="${DIST_DIR}/win_stage"
 
@@ -19,9 +19,9 @@ if [ -z "${WIN_ARCH}" ]; then
 fi
 
 if [ "${WIN_ARCH}" = "arm64" ]; then
-  INSTALLER_NAME="${APP_NAME}-v${APP_SHORT_VER}-arm64-Setup.exe"
+  INSTALLER_NAME="${APP_NAME}-v${APP_VERSION}-arm64-Setup.exe"
 else
-  INSTALLER_NAME="${APP_NAME}-v${APP_SHORT_VER}-Setup.exe"
+  INSTALLER_NAME="${APP_NAME}-v${APP_VERSION}-Setup.exe"
 fi
 INSTALLER_PATH="${DIST_DIR}/${INSTALLER_NAME}"
 
@@ -30,21 +30,25 @@ case "${UNAME_S}" in
   MINGW*|MSYS*|CYGWIN*)
     if [ "${WIN_ARCH}" = "arm64" ]; then
       echo "==> Building Windows ARM64 release binary natively (v${APP_VERSION})..."
-      RUSTFLAGS="-D warnings" cargo build --release --target aarch64-pc-windows-msvc
+      cargo build --release --target aarch64-pc-windows-msvc
       BIN_PATH="target/aarch64-pc-windows-msvc/release/shotcraft.exe"
       "${BIN_PATH}" --version
       "${BIN_PATH}" --smoke-test
     else
       echo "==> Building Windows x86_64 release binary natively (v${APP_VERSION})..."
-      RUSTFLAGS="-D warnings" cargo build --release
+      cargo build --release
       BIN_PATH="target/release/shotcraft.exe"
       "${BIN_PATH}" --version
       "${BIN_PATH}" --smoke-test
     fi
     ;;
   *)
+    if [ "${WIN_ARCH}" = "arm64" ]; then
+      echo "ERROR: Windows ARM64 packaging must run natively on Windows ARM64 (aarch64-pc-windows-msvc)." >&2
+      exit 1
+    fi
     echo "==> Cross-compiling Windows x86_64 release binary (v${APP_VERSION})..."
-    RUSTFLAGS="-D warnings" cargo build --release --target x86_64-pc-windows-gnu
+    cargo build --release --target x86_64-pc-windows-gnu
     BIN_PATH="target/x86_64-pc-windows-gnu/release/shotcraft.exe"
     ;;
 esac
@@ -96,6 +100,7 @@ Unicode True
 
 !define APP_NAME "${APP_NAME}"
 !define APP_VERSION "${APP_VERSION}"
+!define APP_VER_NUM "${APP_VER_NUM}"
 !define APP_EXE "${APP_NAME}.exe"
 !define UNINST_KEY "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\\${APP_NAME}"
 
@@ -106,7 +111,7 @@ InstallDirRegKey HKCU "\${UNINST_KEY}" "InstallLocation"
 RequestExecutionLevel user
 SetCompressor /SOLID lzma
 
-VIProductVersion "${APP_VERSION}.0"
+VIProductVersion "\${APP_VER_NUM}.0"
 VIAddVersionKey "ProductName" "\${APP_NAME}"
 VIAddVersionKey "FileDescription" "\${APP_NAME} Installer"
 VIAddVersionKey "FileVersion" "\${APP_VERSION}"
@@ -160,11 +165,13 @@ Section "\${APP_NAME} (required)" SecMain
 SectionEnd
 
 Section "Desktop Shortcut" SecDesktop
-  CreateShortCut "\$DESKTOP\\\${APP_NAME}.lnk" "\$INSTDIR\\\${APP_EXE}" "" "\$INSTDIR\\ShotCraft.ico"
+  IfSilent +2 0
+    CreateShortCut "\$DESKTOP\\\${APP_NAME}.lnk" "\$INSTDIR\\\${APP_EXE}" "" "\$INSTDIR\\ShotCraft.ico"
 SectionEnd
 
 Section "Start with Windows" SecStartup
-  WriteRegStr HKCU "Software\\Microsoft\\Windows\\CurrentVersion\\Run" "\${APP_NAME}" '"\$INSTDIR\\\${APP_EXE}"'
+  IfSilent +2 0
+    WriteRegStr HKCU "Software\\Microsoft\\Windows\\CurrentVersion\\Run" "\${APP_NAME}" '"\$INSTDIR\\\${APP_EXE}"'
 SectionEnd
 
 Section "Uninstall"
@@ -189,15 +196,20 @@ SectionEnd
 NSI
 
 MAKENSIS_BIN="$(command -v makensis || true)"
-if [ -z "${MAKENSIS_BIN}" ] && [ -x "/c/ProgramData/chocolatey/bin/makensis.exe" ]; then
-  MAKENSIS_BIN="/c/ProgramData/chocolatey/bin/makensis.exe"
+if [ -z "${MAKENSIS_BIN}" ] && [ -n "${LOCALAPPDATA:-}" ]; then
+  USER_NSIS="$(cygpath -u "${LOCALAPPDATA}" 2>/dev/null || echo "${LOCALAPPDATA}")/Programs/NSIS/makensis.exe"
+  if [ -x "${USER_NSIS}" ]; then
+    MAKENSIS_BIN="${USER_NSIS}"
+  fi
 fi
-if [ -z "${MAKENSIS_BIN}" ] && [ -x "/c/Program Files (x86)/NSIS/makensis.exe" ]; then
-  MAKENSIS_BIN="/c/Program Files (x86)/NSIS/makensis.exe"
-fi
-if [ -z "${MAKENSIS_BIN}" ] && [ -x "/c/Program Files/NSIS/makensis.exe" ]; then
-  MAKENSIS_BIN="/c/Program Files/NSIS/makensis.exe"
-fi
+for cand in \
+  "/c/ProgramData/chocolatey/bin/makensis.exe" \
+  "/c/Program Files (x86)/NSIS/makensis.exe" \
+  "/c/Program Files/NSIS/makensis.exe"; do
+  if [ -z "${MAKENSIS_BIN}" ] && [ -x "${cand}" ]; then
+    MAKENSIS_BIN="${cand}"
+  fi
+done
 if [ -z "${MAKENSIS_BIN}" ]; then
   echo "ERROR: makensis not found" >&2
   exit 1

@@ -3,10 +3,12 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 #[cfg(not(target_os = "windows"))]
 use std::process::{Command, Stdio};
+use std::sync::Mutex;
 
 use chrono::Local;
 
 const MAX_LOG_BYTES: u64 = 256 * 1024;
+static LOG_LOCK: Mutex<()> = Mutex::new(());
 
 /// Return the path to the persistent ShotCraft log file.
 pub fn log_path() -> PathBuf {
@@ -27,6 +29,7 @@ pub fn open_log_dir() {
 }
 
 fn append_log_entry(path: &Path, level: &str, context: &str, msg: &str) {
+    let _guard = LOG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(parent) = path.parent() {
         let _ = fs::create_dir_all(parent);
     }
@@ -89,10 +92,13 @@ fn show_os_notification(title: &str, msg: &str, is_error: bool) {
 
     #[cfg(target_os = "windows")]
     {
+        if !is_error {
+            return;
+        }
         let title_w: Vec<u16> = title.encode_utf16().chain(std::iter::once(0)).collect();
         let msg_w: Vec<u16> = msg.encode_utf16().chain(std::iter::once(0)).collect();
-        // MB_OK | (MB_ICONERROR or MB_ICONINFORMATION) | MB_SETFOREGROUND
-        let flags: u32 = if is_error { 0x0001_0010 } else { 0x0001_0040 };
+        // MB_OK | MB_ICONERROR (without MB_SETFOREGROUND so active apps aren't hijacked)
+        let flags: u32 = 0x0000_0010;
         std::thread::spawn(move || {
             #[link(name = "user32")]
             unsafe extern "system" {

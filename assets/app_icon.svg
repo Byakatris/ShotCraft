@@ -1,0 +1,242 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024" fill="none">
+  <defs>
+    <!-- Apple continuous squircle container [101..923] (822x822 inside 1024x1024) -->
+    <path id="squircle-shape" d="
+      M 322 101
+      L 702 101
+      C 842 101 923 182 923 322
+      L 923 702
+      C 923 842 842 923 702 923
+      L 322 923
+      C 182 923 101 842 101 702
+      L 101 322
+      C 101 182 182 101 322 101
+      Z
+    "/>
+
+    <path id="squircle-inner" d="
+      M 326 111
+      L 698 111
+      C 833 111 913 191 913 326
+      L 913 698
+      C 913 833 833 913 698 913
+      L 326 913
+      C 191 913 111 833 111 698
+      L 111 326
+      C 111 191 191 111 326 111
+      Z
+    "/>
+
+    <clipPath id="squircle-clip">
+      <use href="#squircle-shape"/>
+    </clipPath>
+
+    <!-- Viewfinder corner brackets (sharp geometric outer/inner corners, span 240..784) -->
+    <g id="brackets-geometry">
+      <path d="M 241 241 H 415 V 267 H 267 V 415 H 241 Z"/>
+      <path d="M 609 241 H 783 V 415 H 757 V 267 H 609 Z"/>
+      <path d="M 241 609 H 267 V 757 H 415 V 783 H 241 Z"/>
+      <path d="M 757 609 H 783 V 783 H 609 V 757 H 757 Z"/>
+    </g>
+
+    <!-- Pure geometric C & S strokes -->
+    <!-- C: centered at (562, 512), R=112, symmetric +-24 deg right opening -->
+    <path id="glyph-c" d="
+      M 664.3 466.4
+      A 112 112 0 1 0 664.3 557.6
+    "/>
+
+    <!-- S: centered around (440, 512); top-right ends cleanly left of C's upper arc -->
+    <path id="glyph-s" d="
+      M 463 394
+      C 412 374 358 400 358 446
+      C 358 494 426 500 482 520
+      C 526 535 538 555 538 580
+      C 538 622 486 644 432 632
+      C 394 624 370 603 356 575
+    "/>
+
+    <!-- Mask for C: ONLY S's middle diagonal crossing (y~458..568) passes OVER C; C's top arc stays completely intact! -->
+    <mask id="mask-c-under-s" maskUnits="userSpaceOnUse">
+      <rect x="0" y="0" width="1024" height="1024" fill="#FFFFFF"/>
+      <path d="
+        M 392 486
+        C 424 502 456 510 482 520
+        C 514 531 530 544 536 562
+      " stroke="#000000" stroke-width="64" stroke-linecap="butt" fill="none"/>
+    </mask>
+
+    <!-- Mask for S: C's lower-left limb passes OVER S -->
+    <mask id="mask-s-under-c" maskUnits="userSpaceOnUse">
+      <rect x="0" y="0" width="1024" height="1024" fill="#FFFFFF"/>
+      <path d="M 465 568 A 112 112 0 0 0 562 624" stroke="#000000" stroke-width="62" stroke-linecap="butt" fill="none"/>
+    </mask>
+
+    <!-- Clip masks so inner glass core sheen never bleeds outside stroke terminals -->
+    <mask id="mask-s-body" maskUnits="userSpaceOnUse">
+      <g mask="url(#mask-s-under-c)">
+        <use href="#glyph-s" stroke="#FFFFFF" stroke-width="43" stroke-linecap="butt"/>
+      </g>
+    </mask>
+    <mask id="mask-c-body" maskUnits="userSpaceOnUse">
+      <g mask="url(#mask-c-under-s)">
+        <use href="#glyph-c" stroke="#FFFFFF" stroke-width="43" stroke-linecap="butt"/>
+      </g>
+    </mask>
+
+    <!-- Deep Midnight Obsidian-Sapphire Liquid Glass Base -->
+    <linearGradient id="glass-body-grad" x1="15%" y1="6%" x2="86%" y2="95%">
+      <stop offset="0%" stop-color="#1B3154"/>
+      <stop offset="32%" stop-color="#0E1D37"/>
+      <stop offset="72%" stop-color="#071124"/>
+      <stop offset="100%" stop-color="#040915"/>
+    </linearGradient>
+
+    <radialGradient id="glass-vignette" cx="50%" cy="46%" r="58%">
+      <stop offset="0%" stop-color="#1E3B66" stop-opacity="0.30"/>
+      <stop offset="68%" stop-color="#091529" stop-opacity="0"/>
+      <stop offset="100%" stop-color="#02050D" stop-opacity="0.56"/>
+    </radialGradient>
+
+    <!-- Smooth liquid glass dome refraction (feathered gradient, zero hard edge) -->
+    <radialGradient id="top-dome-refract" cx="34%" cy="14%" r="62%" fx="30%" fy="10%">
+      <stop offset="0%" stop-color="#FFFFFF" stop-opacity="0.22"/>
+      <stop offset="35%" stop-color="#CCFBF1" stop-opacity="0.10"/>
+      <stop offset="70%" stop-color="#38BDF8" stop-opacity="0.03"/>
+      <stop offset="100%" stop-color="#38BDF8" stop-opacity="0"/>
+    </radialGradient>
+
+    <radialGradient id="caustic-teal-center" cx="50%" cy="50%" r="42%">
+      <stop offset="0%" stop-color="#2DD4BF" stop-opacity="0.22"/>
+      <stop offset="52%" stop-color="#14B8A6" stop-opacity="0.07"/>
+      <stop offset="100%" stop-color="#0F172A" stop-opacity="0"/>
+    </radialGradient>
+
+    <radialGradient id="caustic-bottom-lens" cx="68%" cy="88%" r="48%">
+      <stop offset="0%" stop-color="#67E8F9" stop-opacity="0.18"/>
+      <stop offset="55%" stop-color="#2DD4BF" stop-opacity="0.05"/>
+      <stop offset="100%" stop-color="#2DD4BF" stop-opacity="0"/>
+    </radialGradient>
+
+    <!-- Specular Fresnel Borders -->
+    <linearGradient id="fresnel-outer" x1="12%" y1="8%" x2="88%" y2="92%">
+      <stop offset="0%" stop-color="#FFFFFF" stop-opacity="0.78"/>
+      <stop offset="22%" stop-color="#CCFBF1" stop-opacity="0.40"/>
+      <stop offset="50%" stop-color="#38BDF8" stop-opacity="0.14"/>
+      <stop offset="78%" stop-color="#5EEAD4" stop-opacity="0.24"/>
+      <stop offset="100%" stop-color="#E6FFFA" stop-opacity="0.52"/>
+    </linearGradient>
+
+    <linearGradient id="fresnel-inner" x1="15%" y1="10%" x2="85%" y2="90%">
+      <stop offset="0%" stop-color="#FFFFFF" stop-opacity="0.30"/>
+      <stop offset="35%" stop-color="#99F6E4" stop-opacity="0.10"/>
+      <stop offset="68%" stop-color="#020617" stop-opacity="0.30"/>
+      <stop offset="100%" stop-color="#99F6E4" stop-opacity="0.22"/>
+    </linearGradient>
+
+    <!-- Viewfinder Mint-Aqua Liquid Glass Fill & Rim -->
+    <linearGradient id="bracket-glass-fill" x1="16%" y1="8%" x2="84%" y2="92%">
+      <stop offset="0%" stop-color="#C8FFF4"/>
+      <stop offset="30%" stop-color="#72EBDC"/>
+      <stop offset="72%" stop-color="#3CD6C3"/>
+      <stop offset="100%" stop-color="#1AA79E"/>
+    </linearGradient>
+
+    <linearGradient id="bracket-bevel-rim" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FFFFFF" stop-opacity="0.88"/>
+      <stop offset="45%" stop-color="#CCFBF1" stop-opacity="0.32"/>
+      <stop offset="100%" stop-color="#0F766E" stop-opacity="0.40"/>
+    </linearGradient>
+
+    <!-- Frosted Liquid Crystal Monogram Gradients -->
+    <linearGradient id="c-crystal-fill" x1="16%" y1="8%" x2="84%" y2="92%">
+      <stop offset="0%" stop-color="#DDFBF7"/>
+      <stop offset="28%" stop-color="#96CCCD"/>
+      <stop offset="66%" stop-color="#5D8F98"/>
+      <stop offset="100%" stop-color="#8BC0C3"/>
+    </linearGradient>
+
+    <linearGradient id="s-crystal-fill" x1="14%" y1="6%" x2="86%" y2="94%">
+      <stop offset="0%" stop-color="#FFFFFF"/>
+      <stop offset="24%" stop-color="#C3FCF3"/>
+      <stop offset="62%" stop-color="#6FD7CF"/>
+      <stop offset="100%" stop-color="#3E969B"/>
+    </linearGradient>
+
+    <linearGradient id="glyph-core-refract" x1="18%" y1="0%" x2="82%" y2="100%">
+      <stop offset="0%" stop-color="#FFFFFF" stop-opacity="0.58"/>
+      <stop offset="48%" stop-color="#CCFBF1" stop-opacity="0.16"/>
+      <stop offset="100%" stop-color="#FFFFFF" stop-opacity="0.30"/>
+    </linearGradient>
+
+    <!-- Optical Shadows & Caustics -->
+    <filter id="element-shadow" x="-25%" y="-25%" width="150%" height="150%">
+      <feDropShadow dx="0" dy="7" stdDeviation="8" flood-color="#01050D" flood-opacity="0.62"/>
+    </filter>
+
+    <filter id="caustic-soft-blur" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="26"/>
+    </filter>
+
+    <filter id="bevel-highlight-blur" x="-15%" y="-15%" width="130%" height="130%">
+      <feGaussianBlur stdDeviation="2.0"/>
+    </filter>
+  </defs>
+
+  <!-- 1. Main Squircle Glass Container -->
+  <use href="#squircle-shape" fill="url(#glass-body-grad)"/>
+
+  <!-- 2. Internal Caustics & Curved Liquid Refraction (clipped inside squircle) -->
+  <g clip-path="url(#squircle-clip)">
+    <use href="#squircle-shape" fill="url(#glass-vignette)"/>
+    <ellipse cx="512" cy="510" rx="345" ry="305" fill="url(#caustic-teal-center)"/>
+    <use href="#squircle-shape" fill="url(#top-dome-refract)"/>
+    <use href="#squircle-shape" fill="url(#caustic-bottom-lens)"/>
+
+    <!-- Backlit aqua refraction halo behind viewfinder & SC -->
+    <g opacity="0.22" filter="url(#caustic-soft-blur)">
+      <use href="#brackets-geometry" fill="#2DD4BF"/>
+      <use href="#glyph-c" stroke="#5EEAD4" stroke-width="54" stroke-linecap="butt"/>
+      <use href="#glyph-s" stroke="#99F6E4" stroke-width="54" stroke-linecap="butt"/>
+    </g>
+
+    <!-- Fine inner beveled glass edge -->
+    <use href="#squircle-inner" fill="none" stroke="url(#fresnel-inner)" stroke-width="2.2"/>
+  </g>
+
+  <!-- Crisp Outer Liquid Glass Fresnel Rim -->
+  <use href="#squircle-shape" fill="none" stroke="url(#fresnel-outer)" stroke-width="3.5"/>
+
+  <!-- 3. Viewfinder Corner Brackets (Clean Sharp Geometry + Liquid Glass Rim) -->
+  <g filter="url(#element-shadow)">
+    <use href="#brackets-geometry" fill="url(#bracket-glass-fill)"/>
+    <use href="#brackets-geometry" fill="none" stroke="url(#bracket-bevel-rim)" stroke-width="2.2" stroke-linejoin="miter"/>
+  </g>
+
+  <!-- 4. Interlocked Frosted Crystal "SC" Monogram -->
+  <g filter="url(#element-shadow)">
+    <!-- Layer A: C (under S at middle crossing, clean at top, OVER S at lower-left) -->
+    <g mask="url(#mask-c-under-s)">
+      <use href="#glyph-c" stroke="url(#c-crystal-fill)" stroke-width="43" stroke-linecap="butt"/>
+    </g>
+    <!-- Clipped internal specular light tube inside C (zero jagged terminal bleed) -->
+    <g mask="url(#mask-c-body)">
+      <use href="#glyph-c" stroke="url(#glyph-core-refract)" stroke-width="16" stroke-linecap="butt"
+           transform="translate(-4, -5)" filter="url(#bevel-highlight-blur)"/>
+      <use href="#glyph-c" stroke="#FFFFFF" stroke-width="3.2" stroke-linecap="butt" opacity="0.38"
+           transform="translate(-11, -12)" filter="url(#bevel-highlight-blur)"/>
+    </g>
+
+    <!-- Layer B: S (OVER C at middle, UNDER C at lower-left) -->
+    <g mask="url(#mask-s-under-c)">
+      <use href="#glyph-s" stroke="url(#s-crystal-fill)" stroke-width="43" stroke-linecap="butt"/>
+    </g>
+    <!-- Clipped internal specular light tube inside S (zero jagged terminal bleed) -->
+    <g mask="url(#mask-s-body)">
+      <use href="#glyph-s" stroke="url(#glyph-core-refract)" stroke-width="16" stroke-linecap="butt"
+           transform="translate(-4, -5)" filter="url(#bevel-highlight-blur)"/>
+      <use href="#glyph-s" stroke="#FFFFFF" stroke-width="3.4" stroke-linecap="butt" opacity="0.44"
+           transform="translate(-10, -11)" filter="url(#bevel-highlight-blur)"/>
+    </g>
+  </g>
+</svg>

@@ -5,15 +5,16 @@ cd "$(dirname "$0")"
 
 APP_NAME="ShotCraft"
 APP_VERSION="$(grep -m1 '^version' Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')"
-APP_SHORT_VER="$(echo "${APP_VERSION}" | awk -F. '{print $1"."$2}')"
 DIST_DIR="$(pwd)/dist"
 APP_DIR="${DIST_DIR}/${APP_NAME}.app"
-DMG_PATH="${DIST_DIR}/${APP_NAME}-v${APP_SHORT_VER}.dmg"
+DMG_PATH="${DIST_DIR}/${APP_NAME}-v${APP_VERSION}.dmg"
 ICONSET_DIR="${DIST_DIR}/AppIcon.iconset"
 STAGE_DIR="${DIST_DIR}/dmg_stage"
 
-echo "==> Building release binary (v${APP_VERSION})..."
-RUSTFLAGS="-D warnings" cargo build --release
+export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-12.0}"
+
+echo "==> Building release binary (v${APP_VERSION}, macOS ${MACOSX_DEPLOYMENT_TARGET}+)..."
+cargo build --release
 
 rm -rf "${APP_DIR}" "${ICONSET_DIR}" "${STAGE_DIR}" "${DMG_PATH}"
 mkdir -p "${APP_DIR}/Contents/MacOS" "${APP_DIR}/Contents/Resources" "${ICONSET_DIR}" "${STAGE_DIR}"
@@ -52,7 +53,7 @@ cat > "${APP_DIR}/Contents/Info.plist" <<PLIST
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>LSMinimumSystemVersion</key>
-    <string>12.0</string>
+    <string>${MACOSX_DEPLOYMENT_TARGET}</string>
     <key>LSUIElement</key>
     <true/>
     <key>NSHighResolutionCapable</key>
@@ -64,16 +65,13 @@ cat > "${APP_DIR}/Contents/Info.plist" <<PLIST
 PLIST
 
 echo "==> Signing ShotCraft.app (ad-hoc)..."
-codesign --force --deep --sign - "${APP_DIR}"
+xattr -cr "${APP_DIR}" 2>/dev/null || true
+codesign --force --sign - "${APP_DIR}"
 
-echo "==> Creating ShotCraft.dmg..."
+echo "==> Creating ${DMG_PATH}..."
 cp -R "${APP_DIR}" "${STAGE_DIR}/"
 ln -s /Applications "${STAGE_DIR}/Applications"
-if diskutil image create from --srcfolder "${STAGE_DIR}" --volumeName "${APP_NAME}" "${DMG_PATH}" >/dev/null 2>&1; then
-  :
-else
-  hdiutil create -volname "${APP_NAME}" -srcfolder "${STAGE_DIR}" -ov -format UDZO "${DMG_PATH}" >/dev/null
-fi
+hdiutil create -volname "${APP_NAME}" -srcfolder "${STAGE_DIR}" -ov -format UDZO "${DMG_PATH}" >/dev/null
 rm -rf "${STAGE_DIR}"
 
 ls -lh "${DMG_PATH}"

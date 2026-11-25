@@ -46,12 +46,11 @@ pub(super) fn handle_canvas_pointer(
                 .or_else(|| resp.interact_pointer_pos())
                 .map(to_global);
         }
-        if resp.dragged() {
-            if let (Some(a), Some(b)) =
+        if resp.dragged()
+            && let (Some(a), Some(b)) =
                 (shared.drag_start, resp.interact_pointer_pos().map(to_global))
-            {
-                shared.selection = Some(Rect::from_two_pos(a, b).intersect(virtual_rect));
-            }
+        {
+            shared.selection = Some(Rect::from_two_pos(a, b).intersect(virtual_rect));
         }
         if resp.drag_stopped() {
             if let Some(sel) = shared.selection {
@@ -67,81 +66,88 @@ pub(super) fn handle_canvas_pointer(
     }
 
     // Mode::Annotating
-    if shared.active_tool == Tool::Text && resp.clicked() {
-        if let Some(pos) = resp.interact_pointer_pos().map(to_global) {
-            if shared.pending_text.is_some() {
-                shared.commit_pending_text();
-            } else if let Some(idx) = shared
-                .annotations
-                .iter()
-                .rposition(|a| matches!(a, Annotation::Text { .. }) && a.hit_test(pos))
-            {
-                shared.open_text_for_edit(idx);
-            } else {
-                shared.pending_text = Some(PendingText {
-                    pos,
-                    arrow_to: None,
-                    placement: TextPlacement::LeftTop,
-                    buf: String::new(),
-                    just_opened: true,
-                    original: None,
-                });
-            }
-        }
-    }
-
-    if (shared.active_tool == Tool::Pen || shared.active_tool == Tool::Marker) && resp.clicked() {
-        if let Some(pos) = resp.interact_pointer_pos().map(to_global) {
-            shared.push_undo_snapshot();
-            let ann = match shared.active_tool {
-                Tool::Pen => Annotation::Pen {
-                    points: vec![pos],
-                    color: shared.active_color,
-                    thickness: shared.thickness,
-                },
-                _ => Annotation::Marker {
-                    points: vec![pos],
-                    color: shared.active_color,
-                    thickness: shared.thickness,
-                },
-            };
-            shared.annotations.push(ann);
-            shared.last_edited_idx = Some(shared.annotations.len() - 1);
-            shared.selected_annotation = None;
-        }
-    }
-
-    if shared.active_tool == Tool::Step && resp.clicked() {
-        if let Some(pos) = resp.interact_pointer_pos().map(to_global) {
-            shared.push_undo_snapshot();
-            shared.annotations.push(Annotation::Step {
+    if shared.active_tool == Tool::Text
+        && resp.clicked()
+        && let Some(pos) = resp.interact_pointer_pos().map(to_global)
+    {
+        if shared.pending_text.is_some() {
+            shared.commit_pending_text();
+        } else if let Some(idx) = shared
+            .annotations
+            .iter()
+            .rposition(|a| matches!(a, Annotation::Text { .. }) && a.hit_test(pos))
+        {
+            shared.open_text_for_edit(idx);
+        } else {
+            shared.pending_text = Some(PendingText {
                 pos,
-                number: shared.step_counter,
-                color: shared.active_color,
-                radius: shared.step_radius(),
+                arrow_to: None,
+                placement: TextPlacement::LeftTop,
+                buf: String::new(),
+                just_opened: true,
+                original: None,
             });
-            shared.last_edited_idx = Some(shared.annotations.len() - 1);
-            shared.selected_annotation = None;
-            shared.step_counter += 1;
         }
     }
 
-    if shared.active_tool == Tool::Move && resp.double_clicked() {
-        if let Some(pos) = resp.interact_pointer_pos().map(to_global) {
-            if let Some(idx) = shared
-                .annotations
-                .iter()
-                .rposition(|a| matches!(a, Annotation::Text { .. }) && a.hit_test(pos))
-            {
-                shared.open_text_for_edit(idx);
-            }
+    if (shared.active_tool == Tool::Pen || shared.active_tool == Tool::Marker)
+        && resp.clicked()
+        && let Some(pos) = resp.interact_pointer_pos().map(to_global)
+    {
+        shared.push_undo_snapshot();
+        let ann = match shared.active_tool {
+            Tool::Pen => Annotation::Pen {
+                points: vec![pos],
+                color: shared.active_color,
+                thickness: shared.thickness,
+                dashed: cmd_held,
+            },
+            _ => Annotation::Marker {
+                points: vec![pos],
+                color: shared.active_color,
+                thickness: shared.thickness,
+                dashed: cmd_held,
+            },
+        };
+        shared.annotations.push(ann);
+        shared.last_edited_idx = Some(shared.annotations.len() - 1);
+        shared.selected_annotation = None;
+    }
+
+    if shared.active_tool == Tool::Step
+        && resp.clicked()
+        && let Some(pos) = resp.interact_pointer_pos().map(to_global)
+    {
+        shared.push_undo_snapshot();
+        shared.annotations.push(Annotation::Step {
+            pos,
+            number: shared.step_counter,
+            color: shared.active_color,
+            radius: shared.step_radius(),
+        });
+        shared.last_edited_idx = Some(shared.annotations.len() - 1);
+        shared.selected_annotation = None;
+        shared.step_counter += 1;
+    }
+
+    if shared.active_tool == Tool::Move
+        && resp.double_clicked()
+        && let Some(pos) = resp.interact_pointer_pos().map(to_global)
+    {
+        if let Some(idx) = shared
+            .annotations
+            .iter()
+            .rposition(|a| matches!(a, Annotation::Text { .. }) && a.hit_test(pos))
+        {
+            shared.open_text_for_edit(idx);
         }
-    } else if shared.active_tool == Tool::Move && resp.clicked() {
-        if let Some(pos) = resp.interact_pointer_pos().map(to_global) {
-            shared.selected_annotation = shared.annotations.iter().rposition(|a| a.hit_test(pos));
-            if shared.selected_annotation.is_some() {
-                shared.last_edited_idx = shared.selected_annotation;
-            }
+    } else if shared.active_tool == Tool::Move
+        && resp.clicked()
+        && let Some(pos) = resp.interact_pointer_pos().map(to_global)
+    {
+        shared.selected_annotation = shared.annotations.iter().rposition(|a| a.hit_test(pos));
+        if shared.selected_annotation.is_some() {
+            shared.last_edited_idx = shared.selected_annotation;
         }
     }
 
@@ -215,6 +221,7 @@ pub(super) fn handle_canvas_pointer(
                         points: vec![pos],
                         color: shared.active_color,
                         thickness: shared.thickness,
+                        dashed: cmd_held,
                     });
                 }
                 Tool::Marker => {
@@ -223,6 +230,7 @@ pub(super) fn handle_canvas_pointer(
                         points: vec![pos],
                         color: shared.active_color,
                         thickness: shared.thickness,
+                        dashed: cmd_held,
                     });
                 }
                 Tool::Text => {
@@ -270,166 +278,166 @@ pub(super) fn handle_canvas_pointer(
         }
     }
 
-    if resp.dragged() {
-        if let Some(curr) = resp.interact_pointer_pos().map(to_global) {
-            shared.drag_curr = Some(curr);
-            match shared.drag_action {
-                Some(DragAction::EditAnnotationHandle { idx, handle_idx }) => {
-                    if let Some(ann) = shared.annotations.get_mut(idx) {
-                        ann.move_control_point(handle_idx, curr);
-                    }
-                    if matches!(
-                        shared.annotations.get(idx),
-                        Some(Annotation::Blur { .. } | Annotation::Text { .. })
-                    ) {
-                        shared.defer_blur_idx = Some(idx);
-                        shared.pending_blur_rebake = Some(idx);
-                    }
+    if resp.dragged()
+        && let Some(curr) = resp.interact_pointer_pos().map(to_global)
+    {
+        shared.drag_curr = Some(curr);
+        match shared.drag_action {
+            Some(DragAction::EditAnnotationHandle { idx, handle_idx }) => {
+                if let Some(ann) = shared.annotations.get_mut(idx) {
+                    ann.move_control_point(handle_idx, curr);
                 }
-                Some(DragAction::ResizeSelection { handle }) => {
-                    if let Some(sel) = &mut shared.selection {
-                        *sel = apply_resize(*sel, handle, curr, virtual_rect);
-                    }
+                if matches!(
+                    shared.annotations.get(idx),
+                    Some(Annotation::Blur { .. } | Annotation::Text { .. })
+                ) {
+                    shared.defer_blur_idx = Some(idx);
+                    shared.pending_blur_rebake = Some(idx);
                 }
-                Some(DragAction::MoveSelectionAndAll { last_pos }) => {
-                    if let Some(sel) = &mut shared.selection {
-                        let raw_delta = curr - last_pos;
-                        let dx = raw_delta.x.clamp(
-                            virtual_rect.left() - sel.left(),
-                            virtual_rect.right() - sel.right(),
-                        );
-                        let dy = raw_delta.y.clamp(
-                            virtual_rect.top() - sel.top(),
-                            virtual_rect.bottom() - sel.bottom(),
-                        );
-                        let delta = Vec2::new(dx, dy);
-                        *sel = sel.translate(delta);
-                        for ann in &mut shared.annotations {
-                            ann.translate(delta);
-                        }
-                    }
-                    shared.drag_action = Some(DragAction::MoveSelectionAndAll { last_pos: curr });
+            }
+            Some(DragAction::ResizeSelection { handle }) => {
+                if let Some(sel) = &mut shared.selection {
+                    *sel = apply_resize(*sel, handle, curr, virtual_rect);
                 }
-                Some(DragAction::MoveAnnotation { idx, last_pos }) => {
-                    let delta = curr - last_pos;
-                    if let Some(ann) = shared.annotations.get_mut(idx) {
+            }
+            Some(DragAction::MoveSelectionAndAll { last_pos }) => {
+                if let Some(sel) = &mut shared.selection {
+                    let raw_delta = curr - last_pos;
+                    let dx = raw_delta.x.clamp(
+                        virtual_rect.left() - sel.left(),
+                        virtual_rect.right() - sel.right(),
+                    );
+                    let dy = raw_delta.y.clamp(
+                        virtual_rect.top() - sel.top(),
+                        virtual_rect.bottom() - sel.bottom(),
+                    );
+                    let delta = Vec2::new(dx, dy);
+                    *sel = sel.translate(delta);
+                    for ann in &mut shared.annotations {
                         ann.translate(delta);
                     }
-                    shared.drag_action = Some(DragAction::MoveAnnotation { idx, last_pos: curr });
-                    if matches!(
-                        shared.annotations.get(idx),
-                        Some(Annotation::Blur { .. } | Annotation::Text { .. })
-                    ) {
-                        shared.defer_blur_idx = Some(idx);
-                        shared.pending_blur_rebake = Some(idx);
-                    }
                 }
-                Some(DragAction::TextCallout) => {}
-                Some(DragAction::DrawAnnotation) => {
-                    if let Some(start) = shared.drag_start {
-                        match shared.active_tool {
-                            Tool::Pen => {
-                                if let Some(Annotation::Pen { points, .. }) = &mut shared.in_progress
-                                {
-                                    if points.last().is_none_or(|p| p.distance(curr) > 3.5) {
-                                        points.push(curr);
-                                    }
-                                }
-                            }
-                            Tool::Marker => {
-                                if let Some(Annotation::Marker { points, .. }) =
-                                    &mut shared.in_progress
-                                {
-                                    if points.last().is_none_or(|p| p.distance(curr) > 3.5) {
-                                        points.push(curr);
-                                    }
-                                }
-                            }
-                            Tool::Line => {
-                                let end = if shift_held {
-                                    snap_angle(start, curr, shared.snap_angle_deg as f32)
-                                } else {
-                                    curr
-                                };
-                                shared.in_progress = Some(Annotation::Line {
-                                    start,
-                                    end,
-                                    color: shared.active_color,
-                                    thickness: shared.thickness,
-                                });
-                            }
-                            Tool::Arrow => {
-                                let end = if shift_held {
-                                    snap_angle(start, curr, shared.snap_angle_deg as f32)
-                                } else {
-                                    curr
-                                };
-                                shared.in_progress = Some(Annotation::Arrow {
-                                    start,
-                                    end,
-                                    color: shared.active_color,
-                                    thickness: shared.thickness,
-                                });
-                            }
-                            Tool::Ellipse => {
-                                let end = if shift_held {
-                                    snap_square(start, curr)
-                                } else {
-                                    curr
-                                };
-                                shared.in_progress = Some(Annotation::Ellipse {
-                                    rect: Rect::from_two_pos(start, end),
-                                    color: shared.active_color,
-                                    thickness: shared.thickness,
-                                    filled: cmd_held,
-                                });
-                            }
-                            Tool::Rect => {
-                                let end = if shift_held {
-                                    snap_square(start, curr)
-                                } else {
-                                    curr
-                                };
-                                shared.in_progress = Some(Annotation::Rect {
-                                    rect: Rect::from_two_pos(start, end),
-                                    color: shared.active_color,
-                                    thickness: shared.thickness,
-                                    filled: cmd_held,
-                                });
-                            }
-                            Tool::Blur => {
-                                shared.in_progress = Some(Annotation::Blur {
-                                    rect: Rect::from_two_pos(start, curr),
-                                    radius: shared.blur_radius(),
-                                    pixelate: cmd_held,
-                                });
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-                None => {}
+                shared.drag_action = Some(DragAction::MoveSelectionAndAll { last_pos: curr });
             }
+            Some(DragAction::MoveAnnotation { idx, last_pos }) => {
+                let delta = curr - last_pos;
+                if let Some(ann) = shared.annotations.get_mut(idx) {
+                    ann.translate(delta);
+                }
+                shared.drag_action = Some(DragAction::MoveAnnotation { idx, last_pos: curr });
+                if matches!(
+                    shared.annotations.get(idx),
+                    Some(Annotation::Blur { .. } | Annotation::Text { .. })
+                ) {
+                    shared.defer_blur_idx = Some(idx);
+                    shared.pending_blur_rebake = Some(idx);
+                }
+            }
+            Some(DragAction::TextCallout) => {}
+            Some(DragAction::DrawAnnotation) => {
+                if let Some(start) = shared.drag_start {
+                    match shared.active_tool {
+                        Tool::Pen => {
+                            if let Some(Annotation::Pen { points, .. }) = &mut shared.in_progress
+                                && points.last().is_none_or(|p| p.distance(curr) > 3.5)
+                            {
+                                points.push(curr);
+                            }
+                        }
+                        Tool::Marker => {
+                            if let Some(Annotation::Marker { points, .. }) =
+                                &mut shared.in_progress
+                                && points.last().is_none_or(|p| p.distance(curr) > 3.5)
+                            {
+                                points.push(curr);
+                            }
+                        }
+                        Tool::Line => {
+                            let end = if shift_held {
+                                snap_angle(start, curr, shared.snap_angle_deg as f32)
+                            } else {
+                                curr
+                            };
+                            shared.in_progress = Some(Annotation::Line {
+                                start,
+                                end,
+                                color: shared.active_color,
+                                thickness: shared.thickness,
+                                dashed: cmd_held,
+                            });
+                        }
+                        Tool::Arrow => {
+                            let end = if shift_held {
+                                snap_angle(start, curr, shared.snap_angle_deg as f32)
+                            } else {
+                                curr
+                            };
+                            shared.in_progress = Some(Annotation::Arrow {
+                                start,
+                                end,
+                                color: shared.active_color,
+                                thickness: shared.thickness,
+                                dashed: cmd_held,
+                            });
+                        }
+                        Tool::Ellipse => {
+                            let end = if shift_held {
+                                snap_square(start, curr)
+                            } else {
+                                curr
+                            };
+                            shared.in_progress = Some(Annotation::Ellipse {
+                                rect: Rect::from_two_pos(start, end),
+                                color: shared.active_color,
+                                thickness: shared.thickness,
+                                filled: cmd_held,
+                            });
+                        }
+                        Tool::Rect => {
+                            let end = if shift_held {
+                                snap_square(start, curr)
+                            } else {
+                                curr
+                            };
+                            shared.in_progress = Some(Annotation::Rect {
+                                rect: Rect::from_two_pos(start, end),
+                                color: shared.active_color,
+                                thickness: shared.thickness,
+                                filled: cmd_held,
+                            });
+                        }
+                        Tool::Blur => {
+                            shared.in_progress = Some(Annotation::Blur {
+                                rect: Rect::from_two_pos(start, curr),
+                                radius: shared.blur_radius(),
+                                pixelate: cmd_held,
+                            });
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            None => {}
         }
     }
 
     if resp.drag_stopped() {
-        if matches!(shared.drag_action, Some(DragAction::TextCallout)) {
-            if let (Some(start), Some(curr)) = (shared.drag_start, shared.drag_curr) {
-                let (text_pos, arrow_to, placement) = if start.distance(curr) >= 10.0 {
-                    (curr, Some(start), TextPlacement::from_drag(start, curr))
-                } else {
-                    (start, None, TextPlacement::LeftTop)
-                };
-                shared.pending_text = Some(PendingText {
-                    pos: text_pos,
-                    arrow_to,
-                    placement,
-                    buf: String::new(),
-                    just_opened: true,
-                    original: None,
-                });
-            }
+        if matches!(shared.drag_action, Some(DragAction::TextCallout))
+            && let (Some(start), Some(curr)) = (shared.drag_start, shared.drag_curr)
+        {
+            let (text_pos, arrow_to, placement) = if start.distance(curr) >= 10.0 {
+                (curr, Some(start), TextPlacement::from_drag(start, curr))
+            } else {
+                (start, None, TextPlacement::LeftTop)
+            };
+            shared.pending_text = Some(PendingText {
+                pos: text_pos,
+                arrow_to,
+                placement,
+                buf: String::new(),
+                just_opened: true,
+                original: None,
+            });
         }
         if let Some(ann) = shared.in_progress.take() {
             shared.push_undo_snapshot();
