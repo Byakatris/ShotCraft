@@ -101,6 +101,7 @@ fn show_os_notification(title: &str, msg: &str, is_error: bool) {
         let flags: u32 = 0x0000_0010;
         std::thread::spawn(move || {
             #[link(name = "user32")]
+            // SAFETY: Standard Win32 user32 `MessageBoxW` import with matching `system` ABI signature.
             unsafe extern "system" {
                 fn MessageBoxW(
                     hwnd: *mut std::ffi::c_void,
@@ -109,6 +110,7 @@ fn show_os_notification(title: &str, msg: &str, is_error: bool) {
                     utype: u32,
                 ) -> i32;
             }
+            // SAFETY: `msg_w` and `title_w` are NUL-terminated UTF-16 `Vec<u16>` buffers owned by this closure and kept alive across the synchronous `MessageBoxW` call.
             unsafe {
                 MessageBoxW(std::ptr::null_mut(), msg_w.as_ptr(), title_w.as_ptr(), flags);
             }

@@ -6,7 +6,7 @@
 
 **Ultra-fast, ~2 MB cross-platform screenshot & live screen-annotation app in Rust.**
 
-[![Release v0.6.1](https://img.shields.io/badge/release-v0.6.1-5EEAD4?style=flat-square&logo=github&logoColor=white)](https://github.com/Byakatris/ShotCraft/releases/latest)
+[![Release v0.6.2](https://img.shields.io/badge/release-v0.6.2-5EEAD4?style=flat-square&logo=github&logoColor=white)](https://github.com/Byakatris/ShotCraft/releases/latest)
 [![CI](https://img.shields.io/github/actions/workflow/status/Byakatris/ShotCraft/ci.yml?branch=main&style=flat-square&label=CI%20(macOS%20%7C%20Win%20%7C%20Linux))](https://github.com/Byakatris/ShotCraft/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
 
@@ -14,17 +14,17 @@
 
 ---
 
-## Download `v0.6.1`
+## Download `v0.6.2`
 
 Pick your platform for a direct 1-click installer (or view [all releases](https://github.com/Byakatris/ShotCraft/releases/latest)):
 
 | Platform | Direct Installer | Architecture |
 | :--- | :--- | :--- |
-| **macOS** | [**Download `ShotCraft-v0.6.1.dmg`**](https://github.com/Byakatris/ShotCraft/releases/download/v0.6.1/ShotCraft-v0.6.1.dmg) | Apple Silicon (`arm64`) |
-| **Windows (x64)** | [**Download `ShotCraft-v0.6.1-Setup.exe`**](https://github.com/Byakatris/ShotCraft/releases/download/v0.6.1/ShotCraft-v0.6.1-Setup.exe) | Windows 10/11 (`x64`) |
-| **Windows (ARM64)** | [**Download `ShotCraft-v0.6.1-arm64-Setup.exe`**](https://github.com/Byakatris/ShotCraft/releases/download/v0.6.1/ShotCraft-v0.6.1-arm64-Setup.exe) | Windows 11 (`arm64`) |
-| **Linux (Debian / Ubuntu)** | [**Download `ShotCraft-v0.6.1-linux-amd64.deb`**](https://github.com/Byakatris/ShotCraft/releases/download/v0.6.1/ShotCraft-v0.6.1-linux-amd64.deb) | Ubuntu / Debian (`amd64`) |
-| **Linux (Universal)** | [**Download `ShotCraft-v0.6.1-linux-x86_64.tar.gz`**](https://github.com/Byakatris/ShotCraft/releases/download/v0.6.1/ShotCraft-v0.6.1-linux-x86_64.tar.gz) | Any x86_64 distro |
+| **macOS** | [**Download `ShotCraft-v0.6.2.dmg`**](https://github.com/Byakatris/ShotCraft/releases/download/v0.6.2/ShotCraft-v0.6.2.dmg) | Apple Silicon (`arm64`) |
+| **Windows (x64)** | [**Download `ShotCraft-v0.6.2-Setup.exe`**](https://github.com/Byakatris/ShotCraft/releases/download/v0.6.2/ShotCraft-v0.6.2-Setup.exe) | Windows 10/11 (`x64`) |
+| **Windows (ARM64)** | [**Download `ShotCraft-v0.6.2-arm64-Setup.exe`**](https://github.com/Byakatris/ShotCraft/releases/download/v0.6.2/ShotCraft-v0.6.2-arm64-Setup.exe) | Windows 11 (`arm64`) |
+| **Linux (Debian / Ubuntu)** | [**Download `ShotCraft-v0.6.2-linux-amd64.deb`**](https://github.com/Byakatris/ShotCraft/releases/download/v0.6.2/ShotCraft-v0.6.2-linux-amd64.deb) | Ubuntu / Debian (`amd64`) |
+| **Linux (Universal)** | [**Download `ShotCraft-v0.6.2-linux-x86_64.tar.gz`**](https://github.com/Byakatris/ShotCraft/releases/download/v0.6.2/ShotCraft-v0.6.2-linux-x86_64.tar.gz) | Any x86_64 distro |
 
 > [!NOTE]
 > **macOS first launch:** Unsigned GitHub builds trigger macOS Gatekeeper. After moving **ShotCraft.app** to Applications, run once in Terminal:

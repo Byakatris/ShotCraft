@@ -1413,8 +1413,8 @@ mod tests {
         let t = Strings::for_lang(Language::En);
         let theme = ThemeColors::from_positions(0.28, 0.56);
 
-        let idle = format_update_status(&UpdateState::Idle, t, &theme, "0.6.1");
-        assert_eq!(idle.text, "v0.6.1");
+        let idle = format_update_status(&UpdateState::Idle, t, &theme, "0.6.2");
+        assert_eq!(idle.text, "v0.6.2");
         assert!(idle.release_url.is_none());
 
         let avail = format_update_status(
@@ -1426,10 +1426,11 @@ mod tests {
                 download_url: "https://github.com/Byakatris/ShotCraft/releases/download/v0.7.0/ShotCraft-v0.7.0.dmg".into(),
                 asset_size: None,
                 checksums_url: None,
+                checksums_sig_url: None,
             }),
             t,
             &theme,
-            "0.6.1",
+            "0.6.2",
         );
         assert!(avail.text.contains("0.7.0"));
         assert_eq!(
@@ -1437,11 +1438,11 @@ mod tests {
             Some("https://github.com/Byakatris/ShotCraft/releases/tag/v0.7.0")
         );
 
-        let inst = format_update_status(&UpdateState::Installed("0.7.0".into()), t, &theme, "0.6.1");
+        let inst = format_update_status(&UpdateState::Installed("0.7.0".into()), t, &theme, "0.6.2");
         assert!(inst.text.contains(t.update_installed));
         assert!(!inst.text.contains(t.update_available));
 
-        let fail = format_update_status(&UpdateState::Failed("timeout".into()), t, &theme, "0.6.1");
+        let fail = format_update_status(&UpdateState::Failed("timeout".into()), t, &theme, "0.6.2");
         assert!(fail.release_url.is_none());
         assert_eq!(fail.tooltip.as_deref(), Some("timeout"));
     }

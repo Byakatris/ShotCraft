@@ -193,7 +193,7 @@ impl ShotCraftApp {
         self.sync_update_state(updater::UpdateState::Checking);
         let proxy = self.event_proxy.clone();
         std::thread::spawn(move || {
-            let result = updater::check_for_updates();
+            let result = updater::check_for_updates().map_err(String::from);
             let _ = proxy.send_event(AppEvent::UpdateCheckFinished { result, manual });
         });
     }
@@ -209,7 +209,7 @@ impl ShotCraftApp {
         self.sync_update_state(updater::UpdateState::Downloading(info.version.clone()));
         let proxy = self.event_proxy.clone();
         std::thread::spawn(move || {
-            let res = updater::download_and_install(&info);
+            let res = updater::download_and_install(&info).map_err(String::from);
             let _ = proxy.send_event(AppEvent::UpdateInstallFinished(res));
         });
     }
@@ -504,7 +504,7 @@ impl ApplicationHandler<AppEvent> for ShotCraftApp {
             let proxy = self.event_proxy.clone();
             std::thread::spawn(move || {
                 std::thread::sleep(Duration::from_secs(4));
-                let result = updater::check_for_updates();
+                let result = updater::check_for_updates().map_err(String::from);
                 let _ = proxy.send_event(AppEvent::UpdateCheckFinished {
                     result,
                     manual: false,
@@ -817,7 +817,8 @@ fn run_smoke_test() -> Result<(), String> {
 
     // 2. Updater release manifest parser check (covers all 5 asset types)
     let sample = r#"{"tag_name":"v9.9.9","html_url":"https://github.com/Byakatris/ShotCraft/releases/tag/v9.9.9","assets":[{"name":"ShotCraft-v9.9.9.dmg","size":2048,"browser_download_url":"https://github.com/Byakatris/ShotCraft/releases/download/v9.9.9/ShotCraft-v9.9.9.dmg"},{"name":"ShotCraft-v9.9.9-Setup.exe","size":2048,"browser_download_url":"https://github.com/Byakatris/ShotCraft/releases/download/v9.9.9/ShotCraft-v9.9.9-Setup.exe"},{"name":"ShotCraft-v9.9.9-arm64-Setup.exe","size":2048,"browser_download_url":"https://github.com/Byakatris/ShotCraft/releases/download/v9.9.9/ShotCraft-v9.9.9-arm64-Setup.exe"},{"name":"ShotCraft-v9.9.9-linux-amd64.deb","size":2048,"browser_download_url":"https://github.com/Byakatris/ShotCraft/releases/download/v9.9.9/ShotCraft-v9.9.9-linux-amd64.deb"},{"name":"ShotCraft-v9.9.9-linux-x86_64.tar.gz","size":2048,"browser_download_url":"https://github.com/Byakatris/ShotCraft/releases/download/v9.9.9/ShotCraft-v9.9.9-linux-x86_64.tar.gz"}]}"#;
-    let rel = updater::parse_github_release_json(sample, updater::current_platform_target())?;
+    let rel = updater::parse_github_release_json(sample, updater::current_platform_target())
+        .map_err(String::from)?;
     if !updater::is_newer_version(updater::CURRENT_VERSION, &rel.version) {
         return Err("Semver check failed".to_string());
     }

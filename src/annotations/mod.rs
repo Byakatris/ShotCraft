@@ -17,6 +17,48 @@ pub use raster::{bake_blur_patch, render_export, separable_box_blur_rgb};
 
 pub const ROBOTO_FONT_BYTES: &[u8] = include_bytes!("../../assets/Roboto-Medium.ttf");
 
+/// Shared visual constants used by both live GPU preview (`paint.rs`) and CPU export (`raster.rs`).
+pub(crate) const MARKER_ALPHA: u8 = 105;
+pub(crate) const MARKER_WIDTH_MULT: f32 = 3.8;
+pub(crate) const TEXT_BG_EXPAND: f32 = 6.0;
+pub(crate) const TEXT_BG_RADIUS: f32 = 8.0;
+pub(crate) const ARROW_HEAD_HALF_WIDTH_RATIO: f32 = 0.62;
+
+pub struct TextLayout {
+    pub box_rect: Rect,
+    pub content_rect: Rect,
+    pub wrapped_lines: Vec<String>,
+    pub measured_size: Vec2,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ArrowGeometry {
+    pub wing_l: Pos2,
+    pub wing_r: Pos2,
+}
+
+/// Shared arrowhead geometry computation used identically by GPU preview and CPU export.
+pub(crate) fn compute_arrow_geometry(
+    start: Pos2,
+    end: Pos2,
+    stroke_width_px: f32,
+    scale: f32,
+) -> Option<ArrowGeometry> {
+    let dir = end - start;
+    let len = dir.length();
+    if len < 2.0 {
+        return None;
+    }
+    let unit = dir / len;
+    let perp = Vec2::new(-unit.y, unit.x);
+    let head_len = arrow_head_len(stroke_width_px, scale, len);
+    let head_half_w = head_len * ARROW_HEAD_HALF_WIDTH_RATIO;
+    Some(ArrowGeometry {
+        wing_l: end - unit * head_len + perp * head_half_w,
+        wing_r: end - unit * head_len - perp * head_half_w,
+    })
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tool {
     Move,
@@ -241,11 +283,11 @@ impl Annotation {
                 box_size,
                 ..
             } => {
-                let (box_r, content_r, _, _) =
+                let layout =
                     text_box_and_content_rects(*pos, text, *size, *placement, *font, *box_size);
-                let mut r = box_r.union(content_r);
+                let mut r = layout.box_rect.union(layout.content_rect);
                 if let Some(target) = arrow_to {
-                    r.extend_with(text_drag_handle(content_r));
+                    r.extend_with(text_drag_handle(layout.content_rect));
                     r.extend_with(*target);
                 }
                 r.expand(6.0)
@@ -290,13 +332,15 @@ impl Annotation {
                 box_size,
                 ..
             } => {
-                let (box_r, content_r, _, _) =
+                let layout =
                     text_box_and_content_rects(*pos, text, *size, *placement, *font, *box_size);
-                if box_r.expand(6.0).contains(p) || content_r.expand(8.0).contains(p) {
+                if layout.box_rect.expand(6.0).contains(p)
+                    || layout.content_rect.expand(8.0).contains(p)
+                {
                     return true;
                 }
                 if let Some(target) = arrow_to {
-                    let start = callout_anchor(content_r, *target);
+                    let start = callout_anchor(layout.content_rect, *target);
                     return dist_to_segment(p, start, *target) <= 12.0;
                 }
                 false
@@ -432,9 +476,9 @@ impl Annotation {
                 let Some(target) = arrow_to else {
                     return Vec::new();
                 };
-                let (_, content_r, _, _) =
+                let layout =
                     text_box_and_content_rects(*pos, text, *size, *placement, *font, *box_size);
-                vec![text_drag_handle(content_r), *target]
+                vec![text_drag_handle(layout.content_rect), *target]
             }
             _ => Vec::new(),
         }
@@ -473,9 +517,9 @@ impl Annotation {
                 ..
             } => {
                 if handle_idx == 0 {
-                    let (_, content_r, _, _) =
+                    let layout =
                         text_box_and_content_rects(*pos, text, *size, *placement, *font, *box_size);
-                    let old_handle = text_drag_handle(content_r);
+                    let old_handle = text_drag_handle(layout.content_rect);
                     *pos += new_pos - old_handle;
                 } else if handle_idx == 1
                     && let Some(t) = arrow_to
@@ -672,7 +716,7 @@ pub fn text_box_and_content_rects(
     placement: TextPlacement,
     tf: TextFont,
     box_size: Option<Vec2>,
-) -> (Rect, Rect, Vec<String>, Vec2) {
+) -> TextLayout {
     let wrap_w = box_size.map(|s| s.x);
     let (lines, measured_sz) = wrap_text_lines(text, size, tf, wrap_w);
     let final_w = box_size.map_or(measured_sz.x, |s| s.x.max(24.0));
@@ -688,7 +732,12 @@ pub fn text_box_and_content_rects(
     let left = box_r.left() + (box_r.width() - content_w).max(0.0) * placement.h_align_frac();
     let top = box_r.top() + (box_r.height() - content_h).max(0.0) * placement.v_align_frac();
     let content_r = Rect::from_min_size(Pos2::new(left, top), Vec2::new(content_w, content_h));
-    (box_r, content_r, lines, Vec2::new(content_w, content_h))
+    TextLayout {
+        box_rect: box_r,
+        content_rect: content_r,
+        wrapped_lines: lines,
+        measured_size: Vec2::new(content_w, content_h),
+    }
 }
 
 /// Tight bounding rect around the actual wrapped text glyphs (not the stretched virtual box).
@@ -700,7 +749,7 @@ pub fn text_content_rect(
     tf: TextFont,
     box_size: Option<Vec2>,
 ) -> Rect {
-    text_box_and_content_rects(pos, text, size, placement, tf, box_size).1
+    text_box_and_content_rects(pos, text, size, placement, tf, box_size).content_rect
 }
 
 pub fn text_drag_handle(content_r: Rect) -> Pos2 {

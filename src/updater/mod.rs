@@ -1,14 +1,16 @@
-mod json;
 mod sha256;
+mod signature;
 
+use std::fmt;
 use std::fs;
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use json::{JsonParser, JsonVal};
+use serde::Deserialize;
 pub use sha256::{parse_sha256sums, verify_file_sha256};
+pub use signature::{verify_checksums_if_configured, RELEASE_SIGNING_PUBKEY_HEX};
 
 pub const RELEASES_API_URL: &str =
     "https://api.github.com/repos/Byakatris/ShotCraft/releases/latest";
@@ -20,6 +22,40 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 #[cfg(target_os = "windows")]
 const DETACHED_PROCESS: u32 = 0x0000_0008;
 
+/// Typed errors emitted by the ShotCraft auto-updater pipeline.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UpdaterError {
+    Network(String),
+    Parse(String),
+    UntrustedUrl(String),
+    InvalidFilename(String),
+    Verification(String),
+    Io(String),
+    UnsupportedPlatform(String),
+}
+
+impl fmt::Display for UpdaterError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Network(msg)
+            | Self::Parse(msg)
+            | Self::UntrustedUrl(msg)
+            | Self::InvalidFilename(msg)
+            | Self::Verification(msg)
+            | Self::Io(msg)
+            | Self::UnsupportedPlatform(msg) => f.write_str(msg),
+        }
+    }
+}
+
+impl std::error::Error for UpdaterError {}
+
+impl From<UpdaterError> for String {
+    fn from(err: UpdaterError) -> Self {
+        err.to_string()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReleaseInfo {
     pub version: String,
@@ -29,6 +65,7 @@ pub struct ReleaseInfo {
     pub download_url: String,
     pub asset_size: Option<u64>,
     pub checksums_url: Option<String>,
+    pub checksums_sig_url: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -182,7 +219,7 @@ pub fn is_trusted_release_page_url(url: &str) -> bool {
         && trimmed.starts_with("https://github.com/Byakatris/ShotCraft/")
 }
 
-fn sanitize_asset_filename(name: &str) -> Result<String, String> {
+fn sanitize_asset_filename(name: &str) -> Result<String, UpdaterError> {
     let trimmed = name.trim();
     if trimmed.is_empty()
         || trimmed == "."
@@ -194,7 +231,9 @@ fn sanitize_asset_filename(name: &str) -> Result<String, String> {
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
     {
-        return Err(format!("Unsafe asset filename: {name}"));
+        return Err(UpdaterError::InvalidFilename(format!(
+            "Unsafe asset filename: {name}"
+        )));
     }
     Ok(trimmed.to_string())
 }
@@ -205,18 +244,41 @@ fn append_part_suffix(dest: &Path) -> PathBuf {
     PathBuf::from(os)
 }
 
-fn private_update_dir() -> Result<PathBuf, String> {
+fn private_update_dir() -> Result<PathBuf, UpdaterError> {
     let base = dirs::cache_dir()
         .or_else(dirs::config_dir)
         .unwrap_or_else(std::env::temp_dir);
     let dir = base.join("ShotCraft").join("update");
-    fs::create_dir_all(&dir).map_err(|e| format!("Cannot create update cache dir: {e}"))?;
+    fs::create_dir_all(&dir)
+        .map_err(|e| UpdaterError::Io(format!("Cannot create update cache dir: {e}")))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         let _ = fs::set_permissions(&dir, fs::Permissions::from_mode(0o700));
     }
     Ok(dir)
+}
+
+#[derive(Deserialize)]
+struct GitHubAsset {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    browser_download_url: Option<String>,
+    #[serde(default)]
+    size: Option<u64>,
+}
+
+#[derive(Deserialize)]
+struct GitHubRelease {
+    #[serde(default)]
+    tag_name: Option<String>,
+    #[serde(default)]
+    draft: bool,
+    #[serde(default)]
+    html_url: Option<String>,
+    #[serde(default)]
+    assets: Option<Vec<GitHubAsset>>,
 }
 
 struct ParsedAsset<'a> {
@@ -276,47 +338,48 @@ fn select_asset<'a>(assets: &'a [ParsedAsset<'a>], target: PlatformTarget) -> Op
 }
 
 /// Parse a GitHub `/releases/latest` JSON payload and select the installer asset for `target`.
-pub fn parse_github_release_json(json: &str, target: PlatformTarget) -> Result<ReleaseInfo, String> {
-    let root = JsonParser::new(json).parse_root()?;
+pub fn parse_github_release_json(
+    json: &str,
+    target: PlatformTarget,
+) -> Result<ReleaseInfo, UpdaterError> {
+    let root: GitHubRelease = serde_json::from_str(json)
+        .map_err(|e| UpdaterError::Parse(format!("Invalid release JSON: {e}")))?;
 
-    if root.field("draft").and_then(JsonVal::as_bool) == Some(true) {
-        return Err("Draft release ignored".to_string());
+    if root.draft {
+        return Err(UpdaterError::Parse("Draft release ignored".to_string()));
     }
 
     let tag_name = root
-        .field("tag_name")
-        .and_then(JsonVal::as_str)
-        .ok_or_else(|| "Release JSON missing tag_name".to_string())?
-        .to_string();
+        .tag_name
+        .ok_or_else(|| UpdaterError::Parse("Release JSON missing tag_name".to_string()))?;
 
     let (maj, min, pat) = parse_semver(&tag_name)
-        .ok_or_else(|| format!("Invalid release tag semver: {tag_name}"))?;
+        .ok_or_else(|| UpdaterError::Parse(format!("Invalid release tag semver: {tag_name}")))?;
     let version = format!("{maj}.{min}.{pat}");
 
     let html_url = root
-        .field("html_url")
-        .and_then(JsonVal::as_str)
+        .html_url
+        .as_deref()
         .filter(|u| is_trusted_release_page_url(u))
         .unwrap_or(RELEASES_PAGE_URL)
         .to_string();
 
     let assets_json = root
-        .field("assets")
-        .and_then(JsonVal::as_array)
-        .ok_or_else(|| "Release JSON missing assets array".to_string())?;
+        .assets
+        .ok_or_else(|| UpdaterError::Parse("Release JSON missing assets array".to_string()))?;
 
     let mut parsed_assets = Vec::with_capacity(assets_json.len());
-    for item in assets_json {
-        let Some(name) = item.field("name").and_then(JsonVal::as_str) else {
+    for item in &assets_json {
+        let Some(name) = item.name.as_deref() else {
             continue;
         };
-        let Some(download_url) = item.field("browser_download_url").and_then(JsonVal::as_str) else {
+        let Some(download_url) = item.browser_download_url.as_deref() else {
             continue;
         };
         parsed_assets.push(ParsedAsset {
             name,
             download_url,
-            size: item.field("size").and_then(JsonVal::as_u64),
+            size: item.size,
         });
     }
 
@@ -327,14 +390,22 @@ pub fn parse_github_release_json(json: &str, target: PlatformTarget) -> Result<R
         .filter(|u| is_trusted_download_url(u))
         .map(str::to_string);
 
-    let chosen = select_asset(&parsed_assets, target)
-        .ok_or_else(|| format!("No compatible installer asset found for {target:?}"))?;
+    let checksums_sig_url = parsed_assets
+        .iter()
+        .find(|a| a.name.eq_ignore_ascii_case("SHA256SUMS.txt.sig"))
+        .map(|a| a.download_url)
+        .filter(|u| is_trusted_download_url(u))
+        .map(str::to_string);
+
+    let chosen = select_asset(&parsed_assets, target).ok_or_else(|| {
+        UpdaterError::UnsupportedPlatform(format!("No compatible installer asset found for {target:?}"))
+    })?;
 
     if !is_trusted_download_url(chosen.download_url) {
-        return Err(format!(
+        return Err(UpdaterError::UntrustedUrl(format!(
             "Untrusted download URL rejected: {}",
             chosen.download_url
-        ));
+        )));
     }
 
     let asset_name = sanitize_asset_filename(chosen.name)?;
@@ -347,6 +418,7 @@ pub fn parse_github_release_json(json: &str, target: PlatformTarget) -> Result<R
         download_url: chosen.download_url.to_string(),
         asset_size: chosen.size,
         checksums_url,
+        checksums_sig_url,
     })
 }
 
@@ -358,7 +430,7 @@ fn curl_binary() -> &'static str {
     }
 }
 
-fn http_get_text(url: &str) -> Result<String, String> {
+fn http_get_text(url: &str) -> Result<String, UpdaterError> {
     let ua = format!("ShotCraft/{CURRENT_VERSION}");
     let mut cmd = Command::new(curl_binary());
     cmd.args([
@@ -382,18 +454,19 @@ fn http_get_text(url: &str) -> Result<String, String> {
 
     let out = cmd
         .output()
-        .map_err(|e| format!("Failed to run {}: {e}", curl_binary()))?;
+        .map_err(|e| UpdaterError::Network(format!("Failed to run {}: {e}", curl_binary())))?;
 
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
-        return Err(if stderr.is_empty() {
+        return Err(UpdaterError::Network(if stderr.is_empty() {
             format!("HTTP request failed with status {}", out.status)
         } else {
             stderr
-        });
+        }));
     }
 
-    String::from_utf8(out.stdout).map_err(|e| format!("Invalid UTF-8 response: {e}"))
+    String::from_utf8(out.stdout)
+        .map_err(|e| UpdaterError::Parse(format!("Invalid UTF-8 response: {e}")))
 }
 
 fn http_download_file(
@@ -401,12 +474,15 @@ fn http_download_file(
     dest: &Path,
     expected_size: Option<u64>,
     expected_sha256: Option<&str>,
-) -> Result<(), String> {
+) -> Result<(), UpdaterError> {
     if !is_trusted_download_url(url) {
-        return Err(format!("Untrusted download URL: {url}"));
+        return Err(UpdaterError::UntrustedUrl(format!(
+            "Untrusted download URL: {url}"
+        )));
     }
     if let Some(parent) = dest.parent() {
-        fs::create_dir_all(parent).map_err(|e| format!("Cannot create temp update dir: {e}"))?;
+        fs::create_dir_all(parent)
+            .map_err(|e| UpdaterError::Io(format!("Cannot create temp update dir: {e}")))?;
     }
 
     let part_path = append_part_suffix(dest);
@@ -435,44 +511,47 @@ fn http_download_file(
 
     let out = cmd
         .output()
-        .map_err(|e| format!("Download failed to start {}: {e}", curl_binary()))?;
+        .map_err(|e| UpdaterError::Network(format!("Download failed to start {}: {e}", curl_binary())))?;
     if !out.status.success() {
         let _ = fs::remove_file(&part_path);
         let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
-        return Err(if stderr.is_empty() {
+        return Err(UpdaterError::Network(if stderr.is_empty() {
             format!("Download failed with status {}", out.status)
         } else {
             stderr
-        });
+        }));
     }
 
     let size = fs::metadata(&part_path).map(|m| m.len()).unwrap_or(0);
     if size < 1024 {
         let _ = fs::remove_file(&part_path);
-        return Err("Downloaded update file is unexpectedly small".to_string());
+        return Err(UpdaterError::Verification(
+            "Downloaded update file is unexpectedly small".to_string(),
+        ));
     }
     if let Some(expected) = expected_size.filter(|&s| s > 0)
         && size != expected
     {
         let _ = fs::remove_file(&part_path);
-        return Err(format!(
+        return Err(UpdaterError::Verification(format!(
             "Downloaded file size mismatch (expected {expected} bytes, got {size})"
-        ));
+        )));
     }
     if let Some(expected_hex) = expected_sha256
         && let Err(err) = verify_file_sha256(&part_path, expected_hex)
     {
         let _ = fs::remove_file(&part_path);
-        return Err(err);
+        return Err(UpdaterError::Verification(err));
     }
 
     let _ = fs::remove_file(dest);
-    fs::rename(&part_path, dest).map_err(|e| format!("Failed to finalize download: {e}"))?;
+    fs::rename(&part_path, dest)
+        .map_err(|e| UpdaterError::Io(format!("Failed to finalize download: {e}")))?;
     Ok(())
 }
 
 /// Check GitHub Releases (`latest`) and return `Some(ReleaseInfo)` if a newer version exists.
-pub fn check_for_updates() -> Result<Option<ReleaseInfo>, String> {
+pub fn check_for_updates() -> Result<Option<ReleaseInfo>, UpdaterError> {
     let json = http_get_text(RELEASES_API_URL)?;
     let info = parse_github_release_json(&json, current_platform_target())?;
     if is_newer_version(CURRENT_VERSION, &info.version) {
@@ -482,25 +561,52 @@ pub fn check_for_updates() -> Result<Option<ReleaseInfo>, String> {
     }
 }
 
-/// Download the asset in `info`, verify its SHA-256 against `SHA256SUMS.txt`, and trigger installation.
-pub fn download_and_install(info: &ReleaseInfo) -> Result<InstallAction, String> {
+/// Download the asset in `info`, verify its signature (when configured) and SHA-256 against `SHA256SUMS.txt`, and trigger installation.
+pub fn download_and_install(info: &ReleaseInfo) -> Result<InstallAction, UpdaterError> {
     if !is_trusted_download_url(&info.download_url) {
-        return Err("Untrusted release download URL".to_string());
+        return Err(UpdaterError::UntrustedUrl(
+            "Untrusted release download URL".to_string(),
+        ));
     }
     let Some(checksums_url) = info.checksums_url.as_deref() else {
-        return Err(
+        return Err(UpdaterError::Verification(
             "Release is missing SHA256SUMS.txt — please update manually from GitHub Releases"
                 .to_string(),
-        );
+        ));
     };
     if !is_trusted_download_url(checksums_url) {
-        return Err("Untrusted release checksums URL".to_string());
+        return Err(UpdaterError::UntrustedUrl(
+            "Untrusted release checksums URL".to_string(),
+        ));
     }
 
     let clean_name = sanitize_asset_filename(&info.asset_name)?;
     let sums_text = http_get_text(checksums_url)?;
-    let expected_sha = parse_sha256sums(&sums_text, &clean_name)
-        .ok_or_else(|| format!("SHA256SUMS.txt missing checksum for {clean_name}"))?;
+
+    if let Some(pk) = RELEASE_SIGNING_PUBKEY_HEX
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        let sig_text = match info.checksums_sig_url.as_deref() {
+            Some(sig_url) => {
+                if !is_trusted_download_url(sig_url) {
+                    return Err(UpdaterError::UntrustedUrl(
+                        "Untrusted release signature URL".to_string(),
+                    ));
+                }
+                Some(http_get_text(sig_url)?)
+            }
+            None => None,
+        };
+        verify_checksums_if_configured(sums_text.as_bytes(), sig_text.as_deref(), Some(pk))
+            .map_err(UpdaterError::Verification)?;
+    }
+
+    let expected_sha = parse_sha256sums(&sums_text, &clean_name).ok_or_else(|| {
+        UpdaterError::Verification(format!(
+            "SHA256SUMS.txt missing checksum for {clean_name}"
+        ))
+    })?;
 
     let update_dir = private_update_dir()?;
     let download_path = update_dir.join(&clean_name);
@@ -515,14 +621,17 @@ pub fn download_and_install(info: &ReleaseInfo) -> Result<InstallAction, String>
     #[cfg(target_os = "macos")]
     {
         install_macos_dmg(&download_path, &update_dir, &info.version)
+            .map_err(UpdaterError::Io)
     }
     #[cfg(target_os = "windows")]
     {
         install_windows_exe(&download_path, &update_dir, &info.version)
+            .map_err(UpdaterError::Io)
     }
     #[cfg(target_os = "linux")]
     {
         install_linux_pkg(&download_path, &update_dir, &info.version)
+            .map_err(UpdaterError::Io)
     }
     #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
     {
@@ -659,7 +768,7 @@ if [ "$exited" -eq 1 ]; then
   if mv "$dst_app" "$bak"; then
     if ditto "$src_app" "$dst_app"; then
       rm -rf "$bak"
-      xattr -cr "$dst_app" 2>/dev/null || true
+      # curl downloads do not attach com.apple.quarantine; preserve Gatekeeper / signature attributes intact.
       open "$dst_app"
     else
       mv "$bak" "$dst_app" 2>/dev/null || true
@@ -973,6 +1082,11 @@ mod tests {
       "name": "SHA256SUMS.txt",
       "size": 512,
       "browser_download_url": "https://github.com/Byakatris/ShotCraft/releases/download/v0.7.1/SHA256SUMS.txt"
+    },
+    {
+      "name": "SHA256SUMS.txt.sig",
+      "size": 129,
+      "browser_download_url": "https://github.com/Byakatris/ShotCraft/releases/download/v0.7.1/SHA256SUMS.txt.sig"
     }
   ]
 }"#;
@@ -1093,9 +1207,10 @@ mod tests {
     #[test]
     fn parse_release_selects_correct_asset_for_all_platforms() {
         let draft = r#"{"tag_name":"v0.8.0","draft":true,"assets":[]}"#;
-        assert!(parse_github_release_json(draft, PlatformTarget::MacOsArm64)
-            .unwrap_err()
-            .contains("Draft"));
+        assert!(matches!(
+            parse_github_release_json(draft, PlatformTarget::MacOsArm64),
+            Err(UpdaterError::Parse(_))
+        ));
 
         let mac = parse_github_release_json(SAMPLE_RELEASE_JSON, PlatformTarget::MacOsArm64).unwrap();
         assert_eq!(mac.version, "0.7.1");
@@ -1105,9 +1220,19 @@ mod tests {
             mac.checksums_url.as_deref(),
             Some("https://github.com/Byakatris/ShotCraft/releases/download/v0.7.1/SHA256SUMS.txt")
         );
+        assert_eq!(
+            mac.checksums_sig_url.as_deref(),
+            Some("https://github.com/Byakatris/ShotCraft/releases/download/v0.7.1/SHA256SUMS.txt.sig")
+        );
 
-        assert!(parse_github_release_json(SAMPLE_RELEASE_JSON, PlatformTarget::MacOsX64).is_err());
-        assert!(parse_github_release_json(SAMPLE_RELEASE_JSON, PlatformTarget::Unsupported).is_err());
+        assert!(matches!(
+            parse_github_release_json(SAMPLE_RELEASE_JSON, PlatformTarget::MacOsX64),
+            Err(UpdaterError::UnsupportedPlatform(_))
+        ));
+        assert!(matches!(
+            parse_github_release_json(SAMPLE_RELEASE_JSON, PlatformTarget::Unsupported),
+            Err(UpdaterError::UnsupportedPlatform(_))
+        ));
 
         let win =
             parse_github_release_json(SAMPLE_RELEASE_JSON, PlatformTarget::WindowsX64).unwrap();
@@ -1136,9 +1261,11 @@ mod tests {
             download_url: "https://github.com/Byakatris/ShotCraft/releases/download/v0.7.1/ShotCraft-v0.7.1.dmg".into(),
             asset_size: Some(3012450),
             checksums_url: None,
+            checksums_sig_url: None,
         };
         let err = download_and_install(&info).unwrap_err();
-        assert!(err.contains("SHA256SUMS.txt"));
+        assert!(matches!(err, UpdaterError::Verification(_)));
+        assert!(err.to_string().contains("SHA256SUMS.txt"));
     }
 
     #[test]
@@ -1154,6 +1281,6 @@ mod tests {
   ]
 }"#;
         let err = parse_github_release_json(tampered, PlatformTarget::MacOsArm64).unwrap_err();
-        assert!(err.contains("Untrusted"));
+        assert!(matches!(err, UpdaterError::UntrustedUrl(_)));
     }
 }

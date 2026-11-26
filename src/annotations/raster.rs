@@ -5,9 +5,10 @@ use image::{Rgba, RgbaImage};
 use crate::settings::TextFont;
 
 use super::{
-    arrow_head_len, callout_anchor, contrasting_fg, dash_params, ellipse_points, font_for,
+    callout_anchor, compute_arrow_geometry, contrasting_fg, dash_params, ellipse_points, font_for,
     measure_line_width, rect_corner_radius, sample_dashed_polyline, smooth_chaikin,
-    text_box_and_content_rects, to_rgba, Annotation,
+    text_box_and_content_rects, to_rgba, Annotation, MARKER_ALPHA, MARKER_WIDTH_MULT,
+    TEXT_BG_EXPAND, TEXT_BG_RADIUS,
 };
 
 /// Crop the captured screenshot to `selection` and rasterize all annotations in exact Z-order.
@@ -79,19 +80,26 @@ pub fn render_export(
                 thickness,
                 dashed,
             } => {
-                let r = (thickness * 3.8 * scale_factor * 0.5).max(3.0);
+                let r = (thickness * MARKER_WIDTH_MULT * scale_factor * 0.5).max(3.0);
                 let smoothed = smooth_chaikin(points);
                 if *dashed {
-                    let (dash_len, gap_len) = dash_params(*thickness * 3.8, true);
+                    let (dash_len, gap_len) = dash_params(*thickness * MARKER_WIDTH_MULT, true);
                     let dashes = sample_dashed_polyline(&smoothed, dash_len, gap_len);
-                    raster_polylines_masked(&mut out, &dashes, &to_px, r, to_rgba(*color, 105), true);
+                    raster_polylines_masked(
+                        &mut out,
+                        &dashes,
+                        &to_px,
+                        r,
+                        to_rgba(*color, MARKER_ALPHA),
+                        true,
+                    );
                 } else {
                     raster_polylines_masked(
                         &mut out,
                         &[smoothed],
                         &to_px,
                         r,
-                        to_rgba(*color, 105),
+                        to_rgba(*color, MARKER_ALPHA),
                         false,
                     );
                 }
@@ -160,9 +168,13 @@ pub fn render_export(
                 font,
                 box_size,
             } => {
-                let (box_r, text_only_r, wrapped_lines, content_sz) =
+                let layout =
                     text_box_and_content_rects(*pos, text, *size, *placement, *font, *box_size);
-                let bg = text_only_r.expand(6.0);
+                let box_r = layout.box_rect;
+                let text_only_r = layout.content_rect;
+                let wrapped_lines = layout.wrapped_lines;
+                let content_sz = layout.measured_size;
+                let bg = text_only_r.expand(TEXT_BG_EXPAND);
                 let (bx0, by0) = to_px(bg.min);
                 let (bx1, by1) = to_px(bg.max);
                 smooth_blur_rounded_region(
@@ -172,7 +184,7 @@ pub fn render_export(
                     bx1.ceil() as i32,
                     by1.ceil() as i32,
                     ((*thickness * 1.1 + 10.0).clamp(12.0, 28.0) * scale_factor).round() as i32,
-                    8.0 * scale_factor,
+                    TEXT_BG_RADIUS * scale_factor,
                 );
 
                 if let Some(target) = arrow_to {
@@ -1005,29 +1017,14 @@ fn raster_arrow(
 ) {
     let start = to_px(start_logical);
     let end = to_px(end_logical);
-    let dx = end.0 - start.0;
-    let dy = end.1 - start.1;
-    let len = (dx * dx + dy * dy).sqrt();
-    if len < 2.0 {
+    let start_pos = Pos2::new(start.0, start.1);
+    let end_pos = Pos2::new(end.0, end.1);
+    let Some(geom) = compute_arrow_geometry(start_pos, end_pos, px_thickness, scale_factor) else {
         return;
-    }
-    let ux = dx / len;
-    let uy = dy / len;
-    let px = -uy;
-    let py = ux;
-
-    let head_len = arrow_head_len(px_thickness, scale_factor, len);
-    let head_half_w = head_len * 0.62;
+    };
     let r = (px_thickness * 0.5).max(0.5);
-
-    let wing_l = (
-        end.0 - ux * head_len + px * head_half_w,
-        end.1 - uy * head_len + py * head_half_w,
-    );
-    let wing_r = (
-        end.0 - ux * head_len - px * head_half_w,
-        end.1 - uy * head_len - py * head_half_w,
-    );
+    let wing_l = (geom.wing_l.x, geom.wing_l.y);
+    let wing_r = (geom.wing_r.x, geom.wing_r.y);
 
     if dashed {
         let (dash_len, gap_len) = dash_params(logical_thickness, false);

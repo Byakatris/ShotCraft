@@ -1,6 +1,6 @@
 [package]
 name = "shotcraft"
-version = "0.6.1"
+version = "0.6.2"
 edition = "2024"
 license = "MIT"
 description = "Lightweight, fast cross-platform screenshot and annotation app in Rust"
@@ -23,6 +23,10 @@ arboard = "3.4"
 ab_glyph = "0.2"
 dirs = "6.0"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+ed25519-dalek = { version = "2", default-features = false, features = ["std"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"

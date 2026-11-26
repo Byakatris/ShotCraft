@@ -631,9 +631,9 @@ fn text_callout_anchor_consistent_across_hit_test_and_handles() {
         font: TextFont::Roboto,
         box_size: None,
     };
-    let (_, content_r, _, _) =
+    let layout =
         text_box_and_content_rects(pos, "Callout", 18.0, TextPlacement::LeftTop, TextFont::Roboto, None);
-    let anchor = callout_anchor(content_r, target);
+    let anchor = callout_anchor(layout.content_rect, target);
     let midpoint = Pos2::new((anchor.x + target.x) * 0.5, (anchor.y + target.y) * 0.5);
 
     assert_eq!(ann.control_points().len(), 2);
@@ -745,4 +745,203 @@ fn paint_annotations_headless_emits_dashed_segments_and_callout_handles() {
         "expected >= 12 GPU shapes, got {}",
         full_output.shapes.len()
     );
+}
+
+#[test]
+fn paint_vs_raster_parity_all_tools() {
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    let ctx = egui::Context::default();
+    let mut fonts = egui::FontDefinitions::default();
+    fonts.font_data.insert(
+        "roboto_parity".to_owned(),
+        Arc::new(egui::FontData::from_static(ROBOTO_FONT_BYTES)),
+    );
+    fonts.families.insert(
+        egui::FontFamily::Name(TextFont::Roboto.egui_family().into()),
+        vec!["roboto_parity".to_owned()],
+    );
+    ctx.set_fonts(fonts);
+
+    let mut src = RgbaImage::new(200, 200);
+    for y in 0..200u32 {
+        for x in 0..200u32 {
+            let c = if (x / 4 + y / 4) % 2 == 0 {
+                Rgba([20, 25, 35, 255])
+            } else {
+                Rgba([60, 75, 95, 255])
+            };
+            src.put_pixel(x, y, c);
+        }
+    }
+    let bounds = Rect::from_min_size(Pos2::ZERO, Vec2::new(200.0, 200.0));
+
+    let cases: Vec<(&str, Annotation, f32)> = vec![
+        (
+            "pen",
+            Annotation::Pen {
+                points: vec![Pos2::new(30.0, 40.0), Pos2::new(150.0, 120.0)],
+                color: Color32::RED,
+                thickness: 4.0,
+                dashed: false,
+            },
+            4.0,
+        ),
+        (
+            "marker",
+            Annotation::Marker {
+                points: vec![Pos2::new(35.0, 60.0), Pos2::new(160.0, 60.0)],
+                color: Color32::YELLOW,
+                thickness: 4.0,
+                dashed: false,
+            },
+            // Solid marker uses rounded caps on CPU export (radius ~7.6px) vs flat caps in egui
+            8.0,
+        ),
+        (
+            "marker_dashed",
+            Annotation::Marker {
+                points: vec![Pos2::new(35.0, 60.0), Pos2::new(160.0, 60.0)],
+                color: Color32::YELLOW,
+                thickness: 4.0,
+                dashed: true,
+            },
+            4.0,
+        ),
+        (
+            "line",
+            Annotation::Line {
+                start: Pos2::new(25.0, 30.0),
+                end: Pos2::new(170.0, 140.0),
+                color: Color32::GREEN,
+                thickness: 4.0,
+                dashed: false,
+            },
+            4.0,
+        ),
+        (
+            "arrow",
+            Annotation::Arrow {
+                start: Pos2::new(30.0, 100.0),
+                end: Pos2::new(170.0, 100.0),
+                color: Color32::RED,
+                thickness: 4.0,
+                dashed: false,
+            },
+            4.0,
+        ),
+        (
+            "arrow_dashed",
+            Annotation::Arrow {
+                start: Pos2::new(30.0, 120.0),
+                end: Pos2::new(170.0, 120.0),
+                color: Color32::LIGHT_BLUE,
+                thickness: 4.0,
+                dashed: true,
+            },
+            4.0,
+        ),
+        (
+            "rect",
+            Annotation::Rect {
+                rect: Rect::from_min_max(Pos2::new(40.0, 40.0), Pos2::new(150.0, 130.0)),
+                color: Color32::BLUE,
+                thickness: 4.0,
+                filled: false,
+            },
+            4.0,
+        ),
+        (
+            "ellipse",
+            Annotation::Ellipse {
+                rect: Rect::from_min_max(Pos2::new(40.0, 50.0), Pos2::new(160.0, 150.0)),
+                color: Color32::WHITE,
+                thickness: 4.0,
+                filled: false,
+            },
+            4.0,
+        ),
+        (
+            "step",
+            Annotation::Step {
+                pos: Pos2::new(100.0, 100.0),
+                number: 3,
+                color: Color32::from_rgb(20, 180, 170),
+                radius: 14.0,
+            },
+            4.0,
+        ),
+        (
+            "text_callout",
+            Annotation::Text {
+                pos: Pos2::new(110.0, 60.0),
+                text: "Note".to_string(),
+                color: Color32::WHITE,
+                size: 18.0,
+                arrow_to: Some(Pos2::new(40.0, 140.0)),
+                thickness: 3.0,
+                placement: TextPlacement::LeftTop,
+                font: TextFont::Roboto,
+                box_size: None,
+            },
+            7.0,
+        ),
+    ];
+
+    let empty_blurs = HashMap::new();
+    for (name, ann, tol) in cases {
+        let single = [ann];
+        let raw_input = egui::RawInput {
+            screen_rect: Some(bounds),
+            ..Default::default()
+        };
+        let full_output = ctx.run(raw_input, |ctx| {
+            egui::CentralPanel::default()
+                .frame(egui::Frame::NONE)
+                .show(ctx, |ui| {
+                    paint_annotations(
+                        ui.painter(),
+                        &single,
+                        None,
+                        None,
+                        Vec2::ZERO,
+                        1.0,
+                        &empty_blurs,
+                        None,
+                        Vec2::new(200.0, 200.0),
+                        Color32::from_rgb(94, 234, 212),
+                    );
+                });
+        });
+        let clipped = ctx.tessellate(full_output.shapes, full_output.pixels_per_point);
+        let mut gpu_bbox = Rect::NOTHING;
+        for prim in clipped {
+            if let egui::epaint::Primitive::Mesh(mesh) = prim.primitive {
+                for v in &mesh.vertices {
+                    gpu_bbox.extend_with(v.pos);
+                }
+            }
+        }
+        assert!(gpu_bbox.is_positive(), "{name}: GPU emitted empty mesh");
+
+        let out = render_export(&src, bounds, 1.0, &single);
+        let mut cpu_bbox = Rect::NOTHING;
+        for y in 0..200u32 {
+            for x in 0..200u32 {
+                if out.get_pixel(x, y) != src.get_pixel(x, y) {
+                    cpu_bbox.extend_with(Pos2::new(x as f32, y as f32));
+                }
+            }
+        }
+        assert!(cpu_bbox.is_positive(), "{name}: CPU raster emitted no pixels");
+
+        assert!(
+            (gpu_bbox.min.x - cpu_bbox.min.x).abs() <= tol
+                && (gpu_bbox.min.y - cpu_bbox.min.y).abs() <= tol
+                && (gpu_bbox.max.x - cpu_bbox.max.x).abs() <= tol
+                && (gpu_bbox.max.y - cpu_bbox.max.y).abs() <= tol,
+            "{name}: GPU bbox {gpu_bbox:?} vs CPU bbox {cpu_bbox:?} exceeded tol {tol}"
+        );
+    }
 }

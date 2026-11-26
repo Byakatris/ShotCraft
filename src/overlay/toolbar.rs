@@ -29,8 +29,8 @@ pub(super) fn draw_text_callout_preview(
     };
     let map_rect = |r: Rect| -> Rect { Rect::from_min_max(map_pt(r.min), map_pt(r.max)) };
 
-    if matches!(shared.drag_action, Some(DragAction::TextCallout))
-        && let (Some(start), Some(curr)) = (shared.drag_start, shared.drag_curr)
+    if matches!(shared.input.drag_action, Some(DragAction::TextCallout))
+        && let (Some(start), Some(curr)) = (shared.input.drag_start, shared.input.drag_curr)
     {
         let box_w = 104.0;
         let box_h = shared.text_font_size() + 10.0;
@@ -39,7 +39,7 @@ pub(super) fn draw_text_callout_preview(
         painter.rect_stroke(
             map_rect(preview_box),
             8.0 * view_scale,
-            Stroke::new(1.4_f32, shared.active_color),
+            Stroke::new(1.4_f32, shared.tools.active_color),
             egui::StrokeKind::Inside,
         );
         if start.distance(curr) >= 10.0 {
@@ -49,15 +49,15 @@ pub(super) fn draw_text_callout_preview(
                 map_pt(anchor),
                 map_pt(start),
                 Stroke::new(
-                    (shared.thickness * 0.85).max(2.0) * view_scale,
-                    shared.active_color,
+                    (shared.tools.thickness * 0.85).max(2.0) * view_scale,
+                    shared.tools.active_color,
                 ),
                 view_scale,
             );
         }
-    } else if let Some(pending) = &shared.pending_text {
+    } else if let Some(pending) = &shared.input.pending_text {
         let (inner_w, inner_h, _, _, _) =
-            pending_editor_metrics(ctx, pending, shared.thickness, shared.text_font);
+            pending_editor_metrics(ctx, pending, shared.tools.thickness, shared.text_font);
         let frame_w = inner_w + 12.0;
         let frame_h = inner_h + 8.0;
         let live_box = pending.placement.box_rect(pending.pos, frame_w, frame_h);
@@ -89,7 +89,7 @@ pub(super) fn draw_text_callout_preview(
             let anchor = callout_anchor(live_box, target);
             let (arrow_thick, arrow_col) = match &pending.original {
                 Some((_, Annotation::Text { thickness, color, .. })) => (*thickness, *color),
-                _ => (shared.thickness, shared.active_color),
+                _ => (shared.tools.thickness, shared.tools.active_color),
             };
             draw_egui_arrow(
                 painter,
@@ -109,7 +109,10 @@ pub(super) fn draw_inline_text_editor(
     offset: Vec2,
     view_scale: f32,
 ) {
-    let Some(pending) = &mut shared.pending_text else {
+    let active_color = shared.tools.active_color;
+    let default_thick = shared.tools.thickness;
+    let default_font = shared.text_font;
+    let Some(pending) = &mut shared.input.pending_text else {
         return;
     };
     let shifted = pending.pos + offset;
@@ -117,8 +120,6 @@ pub(super) fn draw_inline_text_editor(
     if !local_rect.expand(40.0).contains(local_pt) {
         return;
     }
-    let default_thick = shared.thickness;
-    let default_font = shared.text_font;
     let (box_w, box_h, font_size, edit_font, orig_wrap) =
         pending_editor_metrics(ctx, pending, default_thick, default_font);
     let scaled_w = box_w * view_scale;
@@ -138,7 +139,7 @@ pub(super) fn draw_inline_text_editor(
     );
     let edit_color = match &pending.original {
         Some((_, Annotation::Text { color, .. })) => *color,
-        _ => shared.active_color,
+        _ => active_color,
     };
     let h_align = pending.placement.h_align();
     let just_opened = pending.just_opened;
@@ -220,7 +221,7 @@ pub(super) fn draw_floating_toolbar(
         (x, y)
     };
 
-    let (tx, ty) = if let Some(pos) = shared.toolbar_pos {
+    let (tx, ty) = if let Some(pos) = shared.input.toolbar_pos {
         (
             pos.x.clamp(8.0, (local_rect.max.x - bar_w - 8.0).max(8.0)),
             pos.y.clamp(8.0, (local_rect.max.y - bar_h - 8.0).max(8.0)),
@@ -254,7 +255,7 @@ pub(super) fn draw_floating_toolbar(
             if grip_resp.dragged() {
                 ctx.set_cursor_icon(egui::CursorIcon::Grabbing);
                 let d = grip_resp.drag_delta();
-                shared.toolbar_pos = Some(Pos2::new(
+                shared.input.toolbar_pos = Some(Pos2::new(
                     (bar_rect.min.x + d.x)
                         .clamp(8.0, (local_rect.max.x - bar_w - 8.0).max(8.0)),
                     (bar_rect.min.y + d.y)
@@ -380,8 +381,8 @@ pub(super) fn draw_floating_toolbar(
                 ),
             ];
 
-            let prev_color_pos = shared.color_pos;
-            let prev_thick = shared.thickness;
+            let prev_color_pos = shared.tools.color_pos;
+            let prev_thick = shared.tools.thickness;
             let mut slider_dragging = false;
 
             if is_vert {
@@ -429,15 +430,15 @@ pub(super) fn draw_floating_toolbar(
                                 let (col, c_drag) = m3_color_slider_vertical(
                                     ui,
                                     376.0,
-                                    &mut shared.color_pos,
+                                    &mut shared.tools.color_pos,
                                     t.slider_color,
                                     &shared.theme,
                                 );
-                                shared.active_color = col;
+                                shared.tools.active_color = col;
                                 let s_drag = m3_size_slider_vertical(
                                     ui,
                                     144.0,
-                                    &mut shared.thickness,
+                                    &mut shared.tools.thickness,
                                     1.5,
                                     20.0,
                                     t.slider_size,
@@ -493,14 +494,14 @@ pub(super) fn draw_floating_toolbar(
                                 let (col, c_drag) = m3_color_slider(
                                     ui,
                                     color_w,
-                                    &mut shared.color_pos,
+                                    &mut shared.tools.color_pos,
                                     t.slider_color,
                                     &shared.theme,
                                 );
-                                shared.active_color = col;
+                                shared.tools.active_color = col;
                                 let s_drag = m3_size_slider(
                                     ui,
-                                    &mut shared.thickness,
+                                    &mut shared.tools.thickness,
                                     1.5,
                                     20.0,
                                     t.slider_size,
@@ -513,22 +514,25 @@ pub(super) fn draw_floating_toolbar(
                 });
             }
 
-            let target_idx = shared.selected_annotation.or(shared.last_edited_idx);
-            let color_changed = (shared.color_pos - prev_color_pos).abs() > 1e-4;
-            let thick_changed = (shared.thickness - prev_thick).abs() > 1e-4;
+            let target_idx = shared
+                .input
+                .selected_annotation
+                .or(shared.input.last_edited_idx);
+            let color_changed = (shared.tools.color_pos - prev_color_pos).abs() > 1e-4;
+            let thick_changed = (shared.tools.thickness - prev_thick).abs() > 1e-4;
 
             if (color_changed || thick_changed) && target_idx.is_some() {
-                if !shared.slider_undo_pushed {
+                if !shared.history.slider_undo_pushed {
                     shared.push_undo_snapshot();
-                    shared.slider_undo_pushed = true;
+                    shared.history.slider_undo_pushed = true;
                 }
                 if let Some(idx) = target_idx {
                     if let Some(ann) = shared.annotations.get_mut(idx) {
                         if color_changed {
-                            ann.set_color(shared.active_color);
+                            ann.set_color(shared.tools.active_color);
                         }
                         if thick_changed {
-                            ann.apply_thickness(shared.thickness);
+                            ann.apply_thickness(shared.tools.thickness);
                         }
                     }
                     let affects_blur = shared
@@ -538,11 +542,10 @@ pub(super) fn draw_floating_toolbar(
                         .any(|a| matches!(a, Annotation::Blur { .. } | Annotation::Text { .. }));
                     if affects_blur {
                         if slider_dragging {
-                            shared.defer_blur_idx = Some(idx);
-                            shared.pending_blur_rebake = Some(idx);
+                            shared.blur.defer_blur_idx = Some(idx);
+                            shared.blur.pending_blur_rebake = Some(idx);
                         } else {
-                            shared.defer_blur_idx = None;
-                            shared.pending_blur_rebake = None;
+                            shared.blur.clear_deferred();
                             shared.rebake_blurs_from(idx);
                         }
                     }
@@ -550,7 +553,7 @@ pub(super) fn draw_floating_toolbar(
             }
 
             if !slider_dragging && ctx.input(|i| !i.pointer.any_down()) {
-                shared.slider_undo_pushed = false;
+                shared.history.slider_undo_pushed = false;
                 shared.flush_pending_blur_rebake();
             }
         });
@@ -572,7 +575,7 @@ fn render_tool_and_action_buttons(
             ui,
             id_salt,
             btn_sz,
-            shared.active_tool == tool,
+            shared.tools.active_tool == tool,
             tip,
             &shared.theme,
             draw_fn,
@@ -580,7 +583,7 @@ fn render_tool_and_action_buttons(
         .clicked()
         {
             shared.commit_pending_text();
-            shared.active_tool = tool;
+            shared.tools.active_tool = tool;
         }
     }
 

@@ -100,6 +100,119 @@ pub(super) struct PendingText {
     pub(super) original: Option<(usize, Annotation)>,
 }
 
+pub(super) struct ToolState {
+    pub(super) active_tool: Tool,
+    pub(super) color_pos: f32,
+    pub(super) active_color: Color32,
+    pub(super) thickness: f32,
+    pub(super) step_counter: u32,
+}
+
+pub(super) struct UndoHistory {
+    undo_stack: Vec<(Vec<Annotation>, u32)>,
+    redo_stack: Vec<(Vec<Annotation>, u32)>,
+    pub(super) slider_undo_pushed: bool,
+}
+
+impl UndoHistory {
+    pub(super) fn new() -> Self {
+        Self {
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
+            slider_undo_pushed: false,
+        }
+    }
+
+    pub(super) fn push(&mut self, annotations: Vec<Annotation>, step_counter: u32) {
+        self.undo_stack.push((annotations, step_counter));
+        if self.undo_stack.len() > MAX_UNDO_STEPS {
+            let overflow = self.undo_stack.len() - MAX_UNDO_STEPS;
+            self.undo_stack.drain(0..overflow);
+        }
+        self.redo_stack.clear();
+    }
+
+    pub(super) fn undo(
+        &mut self,
+        current_anns: &mut Vec<Annotation>,
+        current_step: u32,
+    ) -> Option<u32> {
+        let (prev_anns, prev_step) = self.undo_stack.pop()?;
+        self.redo_stack
+            .push((std::mem::take(current_anns), current_step));
+        *current_anns = prev_anns;
+        Some(prev_step)
+    }
+
+    pub(super) fn redo(
+        &mut self,
+        current_anns: &mut Vec<Annotation>,
+        current_step: u32,
+    ) -> Option<u32> {
+        let (next_anns, next_step) = self.redo_stack.pop()?;
+        self.undo_stack
+            .push((std::mem::take(current_anns), current_step));
+        *current_anns = next_anns;
+        Some(next_step)
+    }
+
+    #[cfg(test)]
+    pub(super) fn len(&self) -> usize {
+        self.undo_stack.len()
+    }
+
+    #[cfg(test)]
+    pub(super) fn is_redo_empty(&self) -> bool {
+        self.redo_stack.is_empty()
+    }
+
+    pub(super) fn can_redo(&self) -> bool {
+        !self.redo_stack.is_empty()
+    }
+}
+
+pub(super) struct BlurCache {
+    pub(super) revision: u64,
+    pub(super) baked_blurs: HashMap<usize, (u64, ColorImage)>,
+    pub(super) defer_blur_idx: Option<usize>,
+    pub(super) pending_blur_rebake: Option<usize>,
+    pub(super) need_live_blur_capture: bool,
+    pub(super) text_blur_img: Option<Arc<ColorImage>>,
+}
+
+impl BlurCache {
+    pub(super) fn new() -> Self {
+        Self {
+            revision: 0,
+            baked_blurs: HashMap::new(),
+            defer_blur_idx: None,
+            pending_blur_rebake: None,
+            need_live_blur_capture: false,
+            text_blur_img: None,
+        }
+    }
+
+    pub(super) fn clear_deferred(&mut self) {
+        self.defer_blur_idx = None;
+        self.pending_blur_rebake = None;
+    }
+}
+
+pub(super) struct InteractionState {
+    pub(super) modifiers: ModifiersState,
+    pub(super) mode: Mode,
+    pub(super) hover_pos: Option<Pos2>,
+    pub(super) drag_start: Option<Pos2>,
+    pub(super) drag_curr: Option<Pos2>,
+    pub(super) drag_action: Option<DragAction>,
+    pub(super) selection: Option<Rect>,
+    pub(super) toolbar_pos: Option<Pos2>,
+    pub(super) in_progress: Option<Annotation>,
+    pub(super) selected_annotation: Option<usize>,
+    pub(super) last_edited_idx: Option<usize>,
+    pub(super) pending_text: Option<PendingText>,
+}
+
 pub(super) struct OverlayShared {
     pub(super) virtual_screen: CapturedScreen,
     pub(super) live_draw: bool,
@@ -111,37 +224,13 @@ pub(super) struct OverlayShared {
     pub(super) snap_angle_deg: u16,
     pub(super) text_font: TextFont,
     pub(super) toolbar_layout: ToolbarLayout,
-
-    pub(super) modifiers: ModifiersState,
-    pub(super) mode: Mode,
-    pub(super) hover_pos: Option<Pos2>,
-    pub(super) drag_start: Option<Pos2>,
-    pub(super) drag_curr: Option<Pos2>,
-    pub(super) drag_action: Option<DragAction>,
-    pub(super) selection: Option<Rect>,
-    pub(super) toolbar_pos: Option<Pos2>,
-
-    pub(super) active_tool: Tool,
-    pub(super) color_pos: f32,
-    pub(super) active_color: Color32,
-    pub(super) thickness: f32,
     pub(super) annotations: Vec<Annotation>,
-    pub(super) undo_stack: Vec<(Vec<Annotation>, u32)>,
-    pub(super) redo_stack: Vec<(Vec<Annotation>, u32)>,
-    pub(super) slider_undo_pushed: bool,
-    pub(super) in_progress: Option<Annotation>,
-    pub(super) selected_annotation: Option<usize>,
-    pub(super) last_edited_idx: Option<usize>,
-    pub(super) pending_text: Option<PendingText>,
-    pub(super) step_counter: u32,
-
-    pub(super) blur_revision: u64,
-    pub(super) baked_blurs: HashMap<usize, (u64, ColorImage)>,
-    pub(super) defer_blur_idx: Option<usize>,
-    pub(super) pending_blur_rebake: Option<usize>,
-    pub(super) need_live_blur_capture: bool,
-    pub(super) text_blur_img: Option<Arc<ColorImage>>,
     pub(super) status_error: Option<(String, Instant)>,
+
+    pub(super) tools: ToolState,
+    pub(super) history: UndoHistory,
+    pub(super) blur: BlurCache,
+    pub(super) input: InteractionState,
 }
 
 struct OverlayPane {
@@ -221,34 +310,31 @@ impl OverlayWindow {
             snap_angle_deg: config.snap_angle_deg.clamp(1, 90),
             text_font: config.text_font,
             toolbar_layout: config.toolbar_layout,
-            modifiers: ModifiersState::empty(),
-            mode,
-            hover_pos: None,
-            drag_start: None,
-            drag_curr: None,
-            drag_action: None,
-            selection,
-            toolbar_pos: None,
-            active_tool: config.initial_tool,
-            color_pos,
-            active_color: color_from_slider(color_pos),
-            thickness,
             annotations: config.initial_annotations,
-            undo_stack: Vec::new(),
-            redo_stack: Vec::new(),
-            slider_undo_pushed: false,
-            in_progress: None,
-            selected_annotation: None,
-            last_edited_idx: None,
-            pending_text: None,
-            step_counter: config.initial_step_counter.max(1),
-            blur_revision: 0,
-            baked_blurs: HashMap::new(),
-            defer_blur_idx: None,
-            pending_blur_rebake: None,
-            need_live_blur_capture: false,
-            text_blur_img: None,
             status_error: None,
+            tools: ToolState {
+                active_tool: config.initial_tool,
+                color_pos,
+                active_color: color_from_slider(color_pos),
+                thickness,
+                step_counter: config.initial_step_counter.max(1),
+            },
+            history: UndoHistory::new(),
+            blur: BlurCache::new(),
+            input: InteractionState {
+                modifiers: ModifiersState::empty(),
+                mode,
+                hover_pos: None,
+                drag_start: None,
+                drag_curr: None,
+                drag_action: None,
+                selection,
+                toolbar_pos: None,
+                in_progress: None,
+                selected_annotation: None,
+                last_edited_idx: None,
+                pending_text: None,
+            },
         };
         if !config.live_draw && !shared.annotations.is_empty() {
             shared.rebake_blurs_from(0);
@@ -262,15 +348,15 @@ impl OverlayWindow {
     }
 
     pub fn color_pos(&self) -> f32 {
-        self.shared.color_pos
+        self.shared.tools.color_pos
     }
 
     pub fn thickness(&self) -> f32 {
-        self.shared.thickness
+        self.shared.tools.thickness
     }
 
     pub fn active_tool(&self) -> Tool {
-        self.shared.active_tool
+        self.shared.tools.active_tool
     }
 
     pub fn is_live_draw(&self) -> bool {
@@ -286,6 +372,7 @@ impl OverlayWindow {
                 if let Ok(handle) = p.gl_win.window.window_handle()
                     && let raw_window_handle::RawWindowHandle::AppKit(appkit) = handle.as_raw()
                 {
+                    // SAFETY: `appkit.ns_view` is a live AppKit NSView pointer obtained from the active winit window handle on the main thread; sending `window` and `orderOut: nil` is valid in AppKit.
                     unsafe {
                         let ns_view = appkit.ns_view.as_ptr() as *mut objc2::runtime::AnyObject;
                         let ns_win: *mut objc2::runtime::AnyObject =
@@ -313,7 +400,7 @@ impl OverlayWindow {
     pub fn set_live_background(&mut self, screens: Vec<CapturedScreen>) {
         let (virt, _) = take_composite_virtual_screen(screens);
         self.shared.virtual_screen = virt;
-        self.shared.text_blur_img = None;
+        self.shared.blur.text_blur_img = None;
         for p in &mut self.panes {
             p.text_blur_tex = None;
         }
@@ -322,7 +409,7 @@ impl OverlayWindow {
     }
 
     pub fn take_live_draw_state(&mut self) -> (Vec<Annotation>, u32, CapturedScreen) {
-        if self.shared.pending_text.is_some() {
+        if self.shared.input.pending_text.is_some() {
             self.shared.commit_pending_text();
         }
         let virt_meta = CapturedScreen {
@@ -338,7 +425,7 @@ impl OverlayWindow {
         };
         (
             std::mem::take(&mut self.shared.annotations),
-            self.shared.step_counter,
+            self.shared.tools.step_counter,
             virt_meta,
         )
     }
@@ -366,7 +453,7 @@ impl OverlayWindow {
         }
 
         if let WindowEvent::ModifiersChanged(mods) = event {
-            self.shared.modifiers = mods.state();
+            self.shared.input.modifiers = mods.state();
             self.request_all_redraws();
         }
 
@@ -374,8 +461,10 @@ impl OverlayWindow {
             let pane = &self.panes[pane_idx];
             let sf = pane.gl_win.window.scale_factor() as f32;
             let local = Pos2::new(position.x as f32 / sf, position.y as f32 / sf);
-            self.shared.hover_pos = Some(pane.to_global(local));
-            if self.shared.drag_action.is_some() || self.shared.mode != Mode::Annotating {
+            self.shared.input.hover_pos = Some(pane.to_global(local));
+            if self.shared.input.drag_action.is_some()
+                || self.shared.input.mode != Mode::Annotating
+            {
                 self.request_all_redraws();
             }
         }
@@ -393,9 +482,9 @@ impl OverlayWindow {
                 self.request_all_redraws();
             }
 
-            let editing_text = self.shared.pending_text.is_some();
-            let primary_mod = primary_mod_held(self.shared.modifiers, None);
-            let shift_held = self.shared.modifiers.shift_key();
+            let editing_text = self.shared.input.pending_text.is_some();
+            let primary_mod = primary_mod_held(self.shared.input.modifiers, None);
+            let shift_held = self.shared.input.modifiers.shift_key();
 
             if key_ev.state == ElementState::Pressed && primary_mod && !editing_text {
                 match key_ev.physical_key {
@@ -437,10 +526,10 @@ impl OverlayWindow {
                     _ => {}
                 }
             } else if key_ev.state == ElementState::Pressed
-                && self.shared.mode == Mode::Annotating
+                && self.shared.input.mode == Mode::Annotating
                 && !editing_text
                 && !primary_mod
-                && !self.shared.modifiers.alt_key()
+                && !self.shared.input.modifiers.alt_key()
             {
                 let picked = match key_ev.physical_key {
                     PhysicalKey::Code(KeyCode::Digit1) => Some(Tool::Move),
@@ -456,7 +545,7 @@ impl OverlayWindow {
                     _ => None,
                 };
                 if let Some(tool) = picked {
-                    self.shared.active_tool = tool;
+                    self.shared.tools.active_tool = tool;
                     self.request_all_redraws();
                 }
             }
@@ -464,9 +553,9 @@ impl OverlayWindow {
 
         let repaint = self.panes[pane_idx].gl_win.on_window_event(event);
         if repaint {
-            if self.shared.drag_action.is_some()
-                || self.shared.mode != Mode::Annotating
-                || self.shared.pending_text.is_some()
+            if self.shared.input.drag_action.is_some()
+                || self.shared.input.mode != Mode::Annotating
+                || self.shared.input.pending_text.is_some()
             {
                 self.request_all_redraws();
             } else {
@@ -484,7 +573,7 @@ impl OverlayWindow {
     }
 
     fn toolbar_pane_index(&self) -> usize {
-        if let Some(sel) = self.shared.selection {
+        if let Some(sel) = self.shared.input.selection {
             let c = sel.center();
             if let Some(idx) = self.panes.iter().position(|p| p.virtual_bounds().contains(c)) {
                 return idx;
@@ -496,15 +585,15 @@ impl OverlayWindow {
 
 impl OverlayShared {
     pub(super) fn text_font_size(&self) -> f32 {
-        (13.0 + self.thickness * 2.2).clamp(16.0, 57.0)
+        (13.0 + self.tools.thickness * 2.2).clamp(16.0, 57.0)
     }
 
     pub(super) fn step_radius(&self) -> f32 {
-        (9.5 + self.thickness * 0.95).clamp(11.0, 28.5)
+        (9.5 + self.tools.thickness * 0.95).clamp(11.0, 28.5)
     }
 
     pub(super) fn blur_radius(&self) -> f32 {
-        (2.5 + self.thickness * 0.55).clamp(3.0, 14.0)
+        (2.5 + self.tools.thickness * 0.55).clamp(3.0, 14.0)
     }
 
     pub(super) fn set_error(&mut self, msg: String) {
@@ -513,24 +602,21 @@ impl OverlayShared {
     }
 
     pub(super) fn push_undo_snapshot(&mut self) {
-        self.undo_stack
-            .push((self.annotations.clone(), self.step_counter));
-        if self.undo_stack.len() > MAX_UNDO_STEPS {
-            let overflow = self.undo_stack.len() - MAX_UNDO_STEPS;
-            self.undo_stack.drain(0..overflow);
-        }
-        self.redo_stack.clear();
+        self.history
+            .push(self.annotations.clone(), self.tools.step_counter);
     }
 
     pub(super) fn rebake_blurs_from(&mut self, from_idx: usize) {
-        self.baked_blurs.retain(|&idx, _| idx < from_idx && idx < self.annotations.len());
+        self.blur
+            .baked_blurs
+            .retain(|&idx, _| idx < from_idx && idx < self.annotations.len());
         if self.live_draw && self.virtual_screen.image.width() <= 2 {
-            self.blur_revision = self.blur_revision.wrapping_add(1);
+            self.blur.revision = self.blur.revision.wrapping_add(1);
             return;
         }
 
         let mut any_rebuilt = false;
-        let next_rev = self.blur_revision.wrapping_add(1);
+        let next_rev = self.blur.revision.wrapping_add(1);
         for (idx, ann) in self.annotations.iter().enumerate().skip(from_idx) {
             match ann {
                 Annotation::Blur {
@@ -546,7 +632,7 @@ impl OverlayShared {
                         *pixelate,
                         &self.annotations[..idx],
                     );
-                    self.baked_blurs.insert(idx, (next_rev, img));
+                    self.blur.baked_blurs.insert(idx, (next_rev, img));
                     any_rebuilt = true;
                 }
                 Annotation::Text {
@@ -570,66 +656,64 @@ impl OverlayShared {
                         false,
                         &self.annotations[..idx],
                     );
-                    self.baked_blurs.insert(idx, (next_rev, img));
+                    self.blur.baked_blurs.insert(idx, (next_rev, img));
                     any_rebuilt = true;
                 }
                 _ => {}
             }
         }
         if any_rebuilt || from_idx <= self.annotations.len() {
-            self.blur_revision = next_rev;
+            self.blur.revision = next_rev;
         }
     }
 
     pub(super) fn flush_pending_blur_rebake(&mut self) {
-        if let Some(from_idx) = self.pending_blur_rebake.take() {
-            self.defer_blur_idx = None;
+        if let Some(from_idx) = self.blur.pending_blur_rebake.take() {
+            self.blur.defer_blur_idx = None;
             self.rebake_blurs_from(from_idx);
         }
     }
 
     pub(super) fn undo(&mut self) {
-        if self.pending_text.is_some() {
+        if self.input.pending_text.is_some() {
             self.cancel_pending_text();
             return;
         }
-        let Some((prev_anns, prev_step)) = self.undo_stack.pop() else {
+        let Some(prev_step) = self
+            .history
+            .undo(&mut self.annotations, self.tools.step_counter)
+        else {
             return;
         };
-        self.redo_stack
-            .push((std::mem::take(&mut self.annotations), self.step_counter));
-        self.annotations = prev_anns;
-        self.step_counter = prev_step;
-        self.selected_annotation = None;
-        self.last_edited_idx = None;
-        self.defer_blur_idx = None;
-        self.pending_blur_rebake = None;
+        self.tools.step_counter = prev_step;
+        self.input.selected_annotation = None;
+        self.input.last_edited_idx = None;
+        self.blur.clear_deferred();
         self.rebake_blurs_from(0);
     }
 
     pub(super) fn redo(&mut self) {
-        if self.redo_stack.is_empty() {
+        if !self.history.can_redo() {
             return;
         }
-        if self.pending_text.is_some() {
+        if self.input.pending_text.is_some() {
             self.cancel_pending_text();
         }
-        let Some((next_anns, next_step)) = self.redo_stack.pop() else {
+        let Some(next_step) = self
+            .history
+            .redo(&mut self.annotations, self.tools.step_counter)
+        else {
             return;
         };
-        self.undo_stack
-            .push((std::mem::take(&mut self.annotations), self.step_counter));
-        self.annotations = next_anns;
-        self.step_counter = next_step;
-        self.selected_annotation = None;
-        self.last_edited_idx = None;
-        self.defer_blur_idx = None;
-        self.pending_blur_rebake = None;
+        self.tools.step_counter = next_step;
+        self.input.selected_annotation = None;
+        self.input.last_edited_idx = None;
+        self.blur.clear_deferred();
         self.rebake_blurs_from(0);
     }
 
     pub(super) fn commit_pending_text(&mut self) {
-        if let Some(pending) = self.pending_text.take() {
+        if let Some(pending) = self.input.pending_text.take() {
             let trimmed = pending.buf.trim().to_string();
             match pending.original {
                 Some((orig_idx, orig_ann)) => {
@@ -637,12 +721,7 @@ impl OverlayShared {
                     if trimmed.is_empty() {
                         let mut prev_state = self.annotations.clone();
                         prev_state.insert(insert_at, orig_ann);
-                        self.undo_stack.push((prev_state, self.step_counter));
-                        if self.undo_stack.len() > MAX_UNDO_STEPS {
-                            let overflow = self.undo_stack.len() - MAX_UNDO_STEPS;
-                            self.undo_stack.drain(0..overflow);
-                        }
-                        self.redo_stack.clear();
+                        self.history.push(prev_state, self.tools.step_counter);
                         self.rebake_blurs_from(insert_at);
                         return;
                     }
@@ -653,12 +732,7 @@ impl OverlayShared {
                     if changed {
                         let mut prev_state = self.annotations.clone();
                         prev_state.insert(insert_at, orig_ann.clone());
-                        self.undo_stack.push((prev_state, self.step_counter));
-                        if self.undo_stack.len() > MAX_UNDO_STEPS {
-                            let overflow = self.undo_stack.len() - MAX_UNDO_STEPS;
-                            self.undo_stack.drain(0..overflow);
-                        }
-                        self.redo_stack.clear();
+                        self.history.push(prev_state, self.tools.step_counter);
                     }
                     if let Annotation::Text {
                         color,
@@ -683,8 +757,8 @@ impl OverlayShared {
                                 box_size,
                             },
                         );
-                        self.last_edited_idx = Some(insert_at);
-                        self.selected_annotation = None;
+                        self.input.last_edited_idx = Some(insert_at);
+                        self.input.selected_annotation = None;
                         self.rebake_blurs_from(insert_at);
                     }
                 }
@@ -694,16 +768,16 @@ impl OverlayShared {
                     self.annotations.push(Annotation::Text {
                         pos: pending.pos,
                         text: trimmed,
-                        color: self.active_color,
+                        color: self.tools.active_color,
                         size: self.text_font_size(),
                         arrow_to: pending.arrow_to,
-                        thickness: self.thickness,
+                        thickness: self.tools.thickness,
                         placement: pending.placement,
                         font: self.text_font,
                         box_size: None,
                     });
-                    self.last_edited_idx = Some(insert_at);
-                    self.selected_annotation = None;
+                    self.input.last_edited_idx = Some(insert_at);
+                    self.input.selected_annotation = None;
                     self.rebake_blurs_from(insert_at);
                 }
                 None => {}
@@ -712,12 +786,12 @@ impl OverlayShared {
     }
 
     pub(super) fn cancel_pending_text(&mut self) {
-        if let Some(pending) = self.pending_text.take()
+        if let Some(pending) = self.input.pending_text.take()
             && let Some((orig_idx, orig_ann)) = pending.original
         {
             let insert_at = orig_idx.min(self.annotations.len());
             self.annotations.insert(insert_at, orig_ann);
-            self.last_edited_idx = Some(insert_at);
+            self.input.last_edited_idx = Some(insert_at);
             self.rebake_blurs_from(insert_at);
         }
     }
@@ -740,8 +814,8 @@ impl OverlayShared {
             let arrow_to = *arrow_to;
             let placement = *placement;
             let orig = self.annotations.remove(idx);
-            self.selected_annotation = None;
-            self.pending_text = Some(PendingText {
+            self.input.selected_annotation = None;
+            self.input.pending_text = Some(PendingText {
                 pos,
                 arrow_to,
                 placement,
@@ -755,7 +829,7 @@ impl OverlayShared {
 
     pub(super) fn export_and_copy(&mut self) -> bool {
         self.commit_pending_text();
-        let Some(sel) = self.selection else {
+        let Some(sel) = self.input.selection else {
             return false;
         };
         let img = render_export(
@@ -776,7 +850,7 @@ impl OverlayShared {
 
     pub(super) fn export_and_save(&mut self) -> bool {
         self.commit_pending_text();
-        let Some(sel) = self.selection else {
+        let Some(sel) = self.input.selection else {
             return false;
         };
         let img = render_export(
@@ -930,6 +1004,7 @@ impl OverlayPane {
             return tex.id();
         }
         let img = shared
+            .blur
             .text_blur_img
             .get_or_insert_with(|| Arc::new(make_strong_text_blur_image(&shared.virtual_screen.image)))
             .as_ref()
@@ -946,13 +1021,13 @@ impl OverlayPane {
 
     fn sync_blur_textures(&mut self, shared: &OverlayShared) {
         self.blur_textures
-            .retain(|k, _| shared.baked_blurs.contains_key(k));
+            .retain(|k, _| shared.blur.baked_blurs.contains_key(k));
         self.blur_tex_ids
-            .retain(|k, _| shared.baked_blurs.contains_key(k));
+            .retain(|k, _| shared.blur.baked_blurs.contains_key(k));
         self.uploaded_blur_revs
-            .retain(|k, _| shared.baked_blurs.contains_key(k));
+            .retain(|k, _| shared.blur.baked_blurs.contains_key(k));
 
-        for (&idx, &(rev, ref img)) in &shared.baked_blurs {
+        for (&idx, &(rev, ref img)) in &shared.blur.baked_blurs {
             if self.uploaded_blur_revs.get(&idx) != Some(&rev) {
                 let tex = self.gl_win.egui_ctx.load_texture(
                     format!("blur_patch_{idx}"),
@@ -976,12 +1051,12 @@ impl OverlayPane {
         };
         let has_live_bg = !shared.live_draw || shared.virtual_screen.image.width() > 2;
         let needs_text_blur = has_live_bg
-            && (shared.pending_text.is_some()
+            && (shared.input.pending_text.is_some()
                 || shared
                     .annotations
                     .iter()
                     .any(|a| matches!(a, Annotation::Text { .. } | Annotation::Blur { .. }))
-                || matches!(shared.in_progress, Some(Annotation::Blur { .. })));
+                || matches!(shared.input.in_progress, Some(Annotation::Blur { .. })));
         let text_blur_tex = if needs_text_blur {
             Some(self.ensure_text_blur_texture(shared))
         } else {
@@ -1015,9 +1090,9 @@ impl OverlayPane {
         let window_ref = &self.gl_win.window;
 
         let full_output = egui_ctx.run(raw_input, |ctx| {
-            let editing_text = shared.pending_text.is_some();
+            let editing_text = shared.input.pending_text.is_some();
             let (esc, del, enter_commit, shift_held, cmd_held) = ctx.input(|i| {
-                let cmd = primary_mod_held(shared.modifiers, Some(i.modifiers));
+                let cmd = primary_mod_held(shared.input.modifiers, Some(i.modifiers));
                 (
                     i.key_pressed(Key::Escape),
                     !editing_text && (i.key_pressed(Key::Backspace) || i.key_pressed(Key::Delete)),
@@ -1028,7 +1103,7 @@ impl OverlayPane {
             });
 
             if esc {
-                if shared.pending_text.is_some() {
+                if shared.input.pending_text.is_some() {
                     shared.cancel_pending_text();
                 } else {
                     outcome = OverlayOutcome::Close;
@@ -1036,11 +1111,11 @@ impl OverlayPane {
                 }
             }
             if enter_commit {
-                if shared.pending_text.is_some() {
+                if shared.input.pending_text.is_some() {
                     shared.commit_pending_text();
                 } else if !shared.live_draw
-                    && shared.selection.is_some()
-                    && shared.mode == Mode::Annotating
+                    && shared.input.selection.is_some()
+                    && shared.input.mode == Mode::Annotating
                     && shared.export_and_copy()
                 {
                     outcome = OverlayOutcome::Close;
@@ -1048,12 +1123,12 @@ impl OverlayPane {
                 }
             }
             if del
-                && let Some(idx) = shared.selected_annotation.take()
+                && let Some(idx) = shared.input.selected_annotation.take()
                 && idx < shared.annotations.len()
             {
                 shared.push_undo_snapshot();
                 shared.annotations.remove(idx);
-                shared.last_edited_idx = None;
+                shared.input.last_edited_idx = None;
                 shared.rebake_blurs_from(idx);
             }
 
@@ -1078,7 +1153,7 @@ impl OverlayPane {
                     }
 
                     if !shared.live_draw {
-                        if let Some(sel_global) = shared.selection {
+                        if let Some(sel_global) = shared.input.selection {
                             let sel_local = Rect::from_min_max(
                                 self.global_to_local(sel_global.min),
                                 self.global_to_local(sel_global.max),
@@ -1089,8 +1164,8 @@ impl OverlayPane {
                                     tex,
                                     local_size,
                                     sel_local,
-                                    shared.mode == Mode::Annotating
-                                        && shared.active_tool == Tool::Move,
+                                    shared.input.mode == Mode::Annotating
+                                        && shared.tools.active_tool == Tool::Move,
                                     &shared.theme,
                                 );
                             }
@@ -1100,7 +1175,7 @@ impl OverlayPane {
                                     .round() as i32;
                                 let px_h = (sel_global.height() * shared.virtual_screen.scale_factor)
                                     .round() as i32;
-                                let badge_text = if shared.mode == Mode::WindowSelect {
+                                let badge_text = if shared.input.mode == Mode::WindowSelect {
                                     if let Some(lbl) = &shared.hovered_window_label {
                                         format!("{lbl}  •  {px_w} × {px_h}")
                                     } else {
@@ -1138,7 +1213,7 @@ impl OverlayPane {
                                 );
                                 draw_m3_panel(painter, hint_rect, 10.0, &shared.theme);
                                 let t = Strings::for_lang(shared.lang);
-                                let hint_text = if shared.mode == Mode::WindowSelect {
+                                let hint_text = if shared.input.mode == Mode::WindowSelect {
                                     t.hint_window
                                 } else {
                                     t.hint_area
@@ -1152,8 +1227,8 @@ impl OverlayPane {
                                 );
                             }
 
-                            if shared.mode == Mode::Selecting
-                                && let Some(hover_global) = shared.hover_pos
+                            if shared.input.mode == Mode::Selecting
+                                && let Some(hover_global) = shared.input.hover_pos
                             {
                                 let hover = self.global_to_local(hover_global);
                                 let dark = Color32::from_rgba_unmultiplied(0, 0, 0, 95);
@@ -1193,12 +1268,12 @@ impl OverlayPane {
                     paint_annotations(
                         painter,
                         &shared.annotations,
-                        if shared.active_tool == Tool::Move {
-                            shared.selected_annotation
+                        if shared.tools.active_tool == Tool::Move {
+                            shared.input.selected_annotation
                         } else {
                             None
                         },
-                        shared.defer_blur_idx,
+                        shared.blur.defer_blur_idx,
                         offset,
                         view_scale,
                         blur_patch_ids,
@@ -1206,7 +1281,7 @@ impl OverlayPane {
                         virtual_size,
                         shared.theme.accent,
                     );
-                    if let Some(ann) = &shared.in_progress {
+                    if let Some(ann) = &shared.input.in_progress {
                         let empty_blurs = HashMap::new();
                         paint_annotations(
                             painter,
@@ -1251,8 +1326,8 @@ impl OverlayPane {
 
             // 3. Floating Toolbar
             if draw_toolbar_here
-                && shared.mode == Mode::Annotating
-                && let Some(sel_global) = shared.selection
+                && shared.input.mode == Mode::Annotating
+                && let Some(sel_global) = shared.input.selection
             {
                 let sel_local = Rect::from_min_max(
                     self.global_to_local(sel_global.min),
@@ -1275,8 +1350,8 @@ impl OverlayPane {
             .gl_win
             .paint_frame([0.0, 0.0, 0.0, if self.live_draw { 0.0 } else { 1.0 }], full_output);
 
-        if shared.need_live_blur_capture {
-            shared.need_live_blur_capture = false;
+        if shared.blur.need_live_blur_capture {
+            shared.blur.need_live_blur_capture = false;
             return OverlayOutcome::CaptureLiveBlurBackground;
         }
 
@@ -1335,10 +1410,12 @@ fn configure_m3_style(ctx: &egui::Context, active_text_font: TextFont) {
 
 #[cfg(target_os = "windows")]
 fn win_ctrl_down() -> bool {
+    // SAFETY: `GetAsyncKeyState` is a stateless Win32 user32 import taking a virtual-key code (`VK_CONTROL`) and returning a bitmask with no pointer arguments.
     unsafe extern "system" {
         fn GetAsyncKeyState(vkey: i32) -> i16;
     }
     const VK_CONTROL: i32 = 0x11;
+    // SAFETY: Calling `GetAsyncKeyState` with `VK_CONTROL` has no preconditions or aliasing constraints.
     (unsafe { GetAsyncKeyState(VK_CONTROL) } as u16 & 0x8000) != 0
 }
 
@@ -1388,34 +1465,31 @@ mod tests {
             snap_angle_deg: 90,
             text_font: TextFont::Roboto,
             toolbar_layout: ToolbarLayout::Horizontal,
-            modifiers: ModifiersState::empty(),
-            mode: Mode::Annotating,
-            hover_pos: None,
-            drag_start: None,
-            drag_curr: None,
-            drag_action: None,
-            selection: None,
-            toolbar_pos: None,
-            active_tool: Tool::Arrow,
-            color_pos: 0.56,
-            active_color: Color32::WHITE,
-            thickness: 5.0,
             annotations: Vec::new(),
-            undo_stack: Vec::new(),
-            redo_stack: Vec::new(),
-            slider_undo_pushed: false,
-            in_progress: None,
-            selected_annotation: None,
-            last_edited_idx: None,
-            pending_text: None,
-            step_counter: 1,
-            blur_revision: 0,
-            baked_blurs: HashMap::new(),
-            defer_blur_idx: None,
-            pending_blur_rebake: None,
-            need_live_blur_capture: false,
-            text_blur_img: None,
             status_error: None,
+            tools: ToolState {
+                active_tool: Tool::Arrow,
+                color_pos: 0.56,
+                active_color: Color32::WHITE,
+                thickness: 5.0,
+                step_counter: 1,
+            },
+            history: UndoHistory::new(),
+            blur: BlurCache::new(),
+            input: InteractionState {
+                modifiers: ModifiersState::empty(),
+                mode: Mode::Annotating,
+                hover_pos: None,
+                drag_start: None,
+                drag_curr: None,
+                drag_action: None,
+                selection: None,
+                toolbar_pos: None,
+                in_progress: None,
+                selected_annotation: None,
+                last_edited_idx: None,
+                pending_text: None,
+            },
         }
     }
 
@@ -1430,7 +1504,7 @@ mod tests {
             color: Color32::WHITE,
             radius: 14.0,
         });
-        s.step_counter = 2;
+        s.tools.step_counter = 2;
 
         s.push_undo_snapshot();
         s.annotations.push(Annotation::Line {
@@ -1444,19 +1518,69 @@ mod tests {
         assert_eq!(s.annotations.len(), 2);
         s.undo();
         assert_eq!(s.annotations.len(), 1);
-        assert_eq!(s.step_counter, 2);
+        assert_eq!(s.tools.step_counter, 2);
 
         s.undo();
         assert_eq!(s.annotations.len(), 0);
-        assert_eq!(s.step_counter, 1);
+        assert_eq!(s.tools.step_counter, 1);
 
         s.redo();
         assert_eq!(s.annotations.len(), 1);
-        assert_eq!(s.step_counter, 2);
+        assert_eq!(s.tools.step_counter, 2);
 
         // New mutation clears redo stack
         s.push_undo_snapshot();
-        assert!(s.redo_stack.is_empty());
+        assert!(s.history.is_redo_empty());
+    }
+
+    #[test]
+    fn undo_history_enforces_max_capacity_and_empty_noop() {
+        let mut s = test_shared();
+        // Empty undo / redo are no-ops
+        s.undo();
+        s.redo();
+        assert!(s.annotations.is_empty());
+
+        for i in 1..=(MAX_UNDO_STEPS + 10) {
+            s.push_undo_snapshot();
+            s.tools.step_counter = i as u32 + 1;
+        }
+        assert_eq!(s.history.len(), MAX_UNDO_STEPS);
+    }
+
+    #[test]
+    fn commit_pending_text_creates_edits_and_deletes_on_empty() {
+        let mut s = test_shared();
+
+        // Create new text annotation
+        s.input.pending_text = Some(PendingText {
+            pos: Pos2::new(25.0, 25.0),
+            arrow_to: None,
+            placement: TextPlacement::LeftTop,
+            buf: "  Hello  ".into(),
+            just_opened: false,
+            original: None,
+        });
+        s.commit_pending_text();
+        assert_eq!(s.annotations.len(), 1);
+        assert_eq!(s.history.len(), 1);
+        match &s.annotations[0] {
+            Annotation::Text { text, .. } => assert_eq!(text, "Hello"),
+            _ => panic!("expected Text"),
+        }
+
+        // Edit and clear -> deletes annotation and records undo snapshot
+        s.open_text_for_edit(0);
+        if let Some(p) = &mut s.input.pending_text {
+            p.buf.clear();
+        }
+        s.commit_pending_text();
+        assert!(s.annotations.is_empty());
+        assert_eq!(s.history.len(), 2);
+
+        // Undo restores "Hello"
+        s.undo();
+        assert_eq!(s.annotations.len(), 1);
     }
 
     #[test]
@@ -1485,9 +1609,9 @@ mod tests {
         // 1) Re-editing an existing text annotation and hitting toolbar Undo restores Orig safely
         s.open_text_for_edit(1);
         assert_eq!(s.annotations.len(), 1);
-        assert!(s.pending_text.is_some());
+        assert!(s.input.pending_text.is_some());
         s.undo();
-        assert!(s.pending_text.is_none());
+        assert!(s.input.pending_text.is_none());
         assert_eq!(s.annotations.len(), 2);
 
         // 2) Next Undo pops the annotation creation snapshot cleanly
@@ -1495,7 +1619,7 @@ mod tests {
         assert_eq!(s.annotations.len(), 1);
 
         // 3) Redo while a fresh draft is open cancels the draft cleanly and restores redo snapshot
-        s.pending_text = Some(PendingText {
+        s.input.pending_text = Some(PendingText {
             pos: Pos2::new(30.0, 30.0),
             arrow_to: None,
             placement: TextPlacement::LeftTop,
@@ -1504,7 +1628,7 @@ mod tests {
             original: None,
         });
         s.redo();
-        assert!(s.pending_text.is_none());
+        assert!(s.input.pending_text.is_none());
         assert_eq!(s.annotations.len(), 2);
     }
 

@@ -17,6 +17,14 @@ use winit::event::WindowEvent;
 use winit::event_loop::ActiveEventLoop;
 use winit::window::{Window, WindowAttributes, WindowId};
 
+/// AppKit `NSScreenSaverWindowLevel` / `kCGScreenSaverWindowLevel` (1000) keeps capture overlays above menus and dock.
+#[cfg(target_os = "macos")]
+const NS_SCREEN_SAVER_WINDOW_LEVEL: isize = 1000;
+
+/// AppKit `NSOpenGLContextParameterSurfaceOpacity` (236) controls whether the GL drawable composites with alpha.
+#[cfg(target_os = "macos")]
+const NS_OPENGL_CP_SURFACE_OPACITY: isize = 236;
+
 #[derive(Clone, Copy)]
 pub enum WindowChrome {
     Standard,
@@ -89,6 +97,7 @@ impl GlEguiWindow {
             .with_context_api(ContextApi::OpenGl(None))
             .build(Some(raw_handle));
 
+        // SAFETY: `gl_display`, `gl_config`, and `context_attrs` are valid glutin objects tied to the live `raw_handle` window.
         let not_current = unsafe {
             gl_display
                 .create_context(&gl_config, &context_attrs)
@@ -100,6 +109,7 @@ impl GlEguiWindow {
         let h_nz = NonZeroU32::new(size.height.max(1)).ok_or("Invalid window height")?;
         let attrs =
             SurfaceAttributesBuilder::<WindowSurface>::new().build(raw_handle, w_nz, h_nz);
+        // SAFETY: `raw_handle` remains alive for the duration of `window` (`GlEguiWindow` owns `window` and drops `egui_painter` before `window`).
         let gl_surface = unsafe {
             gl_display
                 .create_window_surface(&gl_config, &attrs)
@@ -118,6 +128,7 @@ impl GlEguiWindow {
             configure_macos_transparent_gl_context();
         }
 
+        // SAFETY: `gl_context` is current on this thread and `gl_display` stays valid while resolving OpenGL symbols.
         let gl = Arc::new(unsafe {
             glow::Context::from_loader_function(|s| {
                 let Ok(c) = CString::new(s) else {
@@ -189,6 +200,7 @@ impl GlEguiWindow {
             .tessellate(full_output.shapes, full_output.pixels_per_point);
 
         let size = self.window.inner_size();
+        // SAFETY: `self.gl_context` was made current for this window before `paint_frame`, and `viewport`/`clear_color`/`clear` are standard GL calls with no pointer arguments.
         unsafe {
             use glow::HasContext;
             self.gl.viewport(0, 0, size.width as i32, size.height as i32);
@@ -222,11 +234,12 @@ impl Drop for GlEguiWindow {
 #[cfg(target_os = "macos")]
 fn configure_macos_ns_window(raw_handle: raw_window_handle::RawWindowHandle, transparent: bool) {
     if let raw_window_handle::RawWindowHandle::AppKit(appkit) = raw_handle {
+        // SAFETY: Called on the main AppKit thread right after window creation; `appkit.ns_view` is non-null, and every ObjC return pointer (`ns_win`, `layer`) is null-checked before messaging.
         unsafe {
             let ns_view = appkit.ns_view.as_ptr() as *mut objc2::runtime::AnyObject;
             let ns_win: *mut objc2::runtime::AnyObject = objc2::msg_send![ns_view, window];
             if !ns_win.is_null() {
-                let _: () = objc2::msg_send![ns_win, setLevel: 1000_isize];
+                let _: () = objc2::msg_send![ns_win, setLevel: NS_SCREEN_SAVER_WINDOW_LEVEL];
                 if transparent {
                     let _: () = objc2::msg_send![ns_win, setHasShadow: false];
                     let _: () = objc2::msg_send![ns_win, setOpaque: false];
@@ -247,16 +260,16 @@ fn configure_macos_ns_window(raw_handle: raw_window_handle::RawWindowHandle, tra
 
 #[cfg(target_os = "macos")]
 fn configure_macos_transparent_gl_context() {
+    // SAFETY: Invoked on the thread where `gl_context` is current; `ctx` is null-checked and `&zero` points to a valid stack `i32` (`GLint`) for the synchronous `setValues:forParameter:` call.
     unsafe {
         if let Some(cls) = objc2::runtime::AnyClass::get(c"NSOpenGLContext") {
             let ctx: *mut objc2::runtime::AnyObject = objc2::msg_send![cls, currentContext];
             if !ctx.is_null() {
-                // NSOpenGLContextParameterSurfaceOpacity = 236 -> 0 for transparent GL surface
                 let zero: i32 = 0;
                 let _: () = objc2::msg_send![
                     ctx,
                     setValues: &zero as *const i32,
-                    forParameter: 236_isize
+                    forParameter: NS_OPENGL_CP_SURFACE_OPACITY
                 ];
             }
         }

@@ -5,9 +5,9 @@ use egui::{Color32, Pos2, Rect, Stroke, TextureId, Vec2};
 use crate::material::draw_rounded_texture_uv;
 
 use super::{
-    arrow_head_len, callout_anchor, contrasting_fg, dash_params, ellipse_points,
+    callout_anchor, compute_arrow_geometry, contrasting_fg, dash_params, ellipse_points,
     rect_corner_radius, sample_dashed_polyline, smooth_chaikin, text_box_and_content_rects,
-    Annotation, TextPlacement,
+    Annotation, TextPlacement, MARKER_ALPHA, MARKER_WIDTH_MULT, TEXT_BG_EXPAND, TEXT_BG_RADIUS,
 };
 
 fn paint_polyline_group(
@@ -112,12 +112,16 @@ pub fn paint_annotations(
                 thickness,
                 dashed,
             } => {
-                let marker_col =
-                    Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 105);
-                let width = *thickness * 3.8 * view_scale;
+                let marker_col = Color32::from_rgba_unmultiplied(
+                    color.r(),
+                    color.g(),
+                    color.b(),
+                    MARKER_ALPHA,
+                );
+                let width = *thickness * MARKER_WIDTH_MULT * view_scale;
                 let smoothed = smooth_chaikin(points);
                 let polylines = if *dashed {
-                    let (dash_len, gap_len) = dash_params(*thickness * 3.8, true);
+                    let (dash_len, gap_len) = dash_params(*thickness * MARKER_WIDTH_MULT, true);
                     sample_dashed_polyline(&smoothed, dash_len, gap_len)
                 } else {
                     vec![smoothed]
@@ -200,8 +204,12 @@ pub fn paint_annotations(
                     *size * view_scale,
                     egui::FontFamily::Name(font.egui_family().into()),
                 );
-                let (box_r, content_r, wrapped_lines, measured_sz) =
+                let layout =
                     text_box_and_content_rects(*pos, text, *size, *placement, *font, *box_size);
+                let box_r = layout.box_rect;
+                let content_r = layout.content_rect;
+                let wrapped_lines = layout.wrapped_lines;
+                let measured_sz = layout.measured_size;
                 let display_text = wrapped_lines.join("\n");
                 let unscaled_font =
                     egui::FontId::new(*size, egui::FontFamily::Name(font.egui_family().into()));
@@ -217,8 +225,8 @@ pub fn paint_annotations(
                     Pos2::new(text_left, text_top),
                     Vec2::new(actual_w, content_h),
                 );
-                let baked_bg = content_r.expand(6.0);
-                let bg_global = content_r.union(galley_r).expand(6.0);
+                let baked_bg = content_r.expand(TEXT_BG_EXPAND);
+                let bg_global = content_r.union(galley_r).expand(TEXT_BG_EXPAND);
                 let bg_local = map_rect(bg_global);
                 let patch_matches_size = (bg_global.width() - baked_bg.width()).abs() < 1.5
                     && (bg_global.height() - baked_bg.height()).abs() < 1.5;
@@ -233,7 +241,7 @@ pub fn paint_annotations(
                             bg_global.size(),
                             Rect::from_min_size(Pos2::ZERO, bg_global.size()),
                             bg_local,
-                            8.0 * view_scale,
+                            TEXT_BG_RADIUS * view_scale,
                             Color32::WHITE,
                         );
                     } else if let Some(tex) = text_blur_tex {
@@ -243,18 +251,18 @@ pub fn paint_annotations(
                             virtual_size,
                             bg_global,
                             bg_local,
-                            8.0 * view_scale,
+                            TEXT_BG_RADIUS * view_scale,
                             Color32::WHITE,
                         );
                     } else {
                         painter.rect_filled(
                             bg_local,
-                            8.0 * view_scale,
+                            TEXT_BG_RADIUS * view_scale,
                             Color32::from_rgba_unmultiplied(14, 18, 28, 210),
                         );
                         painter.rect_stroke(
                             bg_local,
-                            8.0 * view_scale,
+                            TEXT_BG_RADIUS * view_scale,
                             Stroke::new(
                                 1.0_f32,
                                 Color32::from_rgba_unmultiplied(255, 255, 255, 38),
@@ -269,13 +277,13 @@ pub fn paint_annotations(
                         virtual_size,
                         bg_global,
                         bg_local,
-                        8.0 * view_scale,
+                        TEXT_BG_RADIUS * view_scale,
                         Color32::WHITE,
                     );
                 } else {
                     painter.rect_filled(
                         bg_local,
-                        8.0 * view_scale,
+                        TEXT_BG_RADIUS * view_scale,
                         Color32::from_rgba_unmultiplied(14, 18, 28, 210),
                     );
                 }
@@ -400,14 +408,12 @@ pub fn draw_egui_arrow(
     stroke: Stroke,
     scale: f32,
 ) {
-    let dir = end - start;
-    let len = dir.length();
-    if len < 2.0 {
+    let Some(geom) = compute_arrow_geometry(start, end, stroke.width, scale) else {
         return;
-    }
+    };
     painter.line_segment([start, end], stroke);
     painter.circle_filled(start, stroke.width * 0.5, stroke.color);
-    draw_egui_arrowhead(painter, dir / len, len, end, stroke, scale);
+    draw_egui_arrowhead(painter, geom, end, stroke);
 }
 
 fn draw_egui_arrow_dashed(
@@ -421,35 +427,25 @@ fn draw_egui_arrow_dashed(
 ) {
     let start = map_pt(start_logical);
     let end = map_pt(end_logical);
-    let dir = end - start;
-    let len = dir.length();
-    if len < 2.0 {
+    let Some(geom) = compute_arrow_geometry(start, end, stroke.width, scale) else {
         return;
-    }
+    };
     let dashes = sample_dashed_polyline(&[start_logical, end_logical], dash_len, gap_len);
     paint_polyline_group(painter, dashes, map_pt, stroke.width, stroke.color, true);
-    draw_egui_arrowhead(painter, dir / len, len, end, stroke, scale);
+    draw_egui_arrowhead(painter, geom, end, stroke);
 }
 
 fn draw_egui_arrowhead(
     painter: &egui::Painter,
-    unit: Vec2,
-    len: f32,
+    geom: super::ArrowGeometry,
     end: Pos2,
     stroke: Stroke,
-    scale: f32,
 ) {
-    let perp = egui::vec2(-unit.y, unit.x);
-    let head_len = arrow_head_len(stroke.width, scale, len);
-    let head_half_w = head_len * 0.62;
-    let wing_l = end - unit * head_len + perp * head_half_w;
-    let wing_r = end - unit * head_len - perp * head_half_w;
-
-    painter.line_segment([end, wing_l], stroke);
-    painter.line_segment([end, wing_r], stroke);
+    painter.line_segment([end, geom.wing_l], stroke);
+    painter.line_segment([end, geom.wing_r], stroke);
 
     let r = stroke.width * 0.5;
     painter.circle_filled(end, r, stroke.color);
-    painter.circle_filled(wing_l, r, stroke.color);
-    painter.circle_filled(wing_r, r, stroke.color);
+    painter.circle_filled(geom.wing_l, r, stroke.color);
+    painter.circle_filled(geom.wing_r, r, stroke.color);
 }

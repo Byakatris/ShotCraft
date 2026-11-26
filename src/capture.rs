@@ -35,6 +35,28 @@ pub struct WindowCandidate {
     pub label: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ScreenMetrics {
+    pub logical_width: f32,
+    pub logical_height: f32,
+    pub scale_factor: f32,
+    pub physical_width: u32,
+    pub physical_height: u32,
+    pub physical_coords: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct VirtualBounds {
+    pub min_x: i32,
+    pub min_y: i32,
+    pub logical_width: f32,
+    pub logical_height: f32,
+    pub scale_factor: f32,
+    pub physical_width: u32,
+    pub physical_height: u32,
+    pub physical_coords: bool,
+}
+
 /// Pure helper computing logical/physical screen dimensions and coordinate convention.
 pub fn compute_screen_metrics(
     raw_w: u32,
@@ -43,7 +65,7 @@ pub fn compute_screen_metrics(
     img_h: u32,
     reported_scale: f32,
     native_physical_coords: bool,
-) -> (f32, f32, f32, u32, u32, bool) {
+) -> ScreenMetrics {
     let raw_wf = raw_w.max(1) as f32;
     let raw_hf = raw_h.max(1) as f32;
     let rep_scale = reported_scale.max(1.0);
@@ -52,18 +74,25 @@ pub fn compute_screen_metrics(
     // Windows and Linux X11 report physical pixels in both Monitor::width/height and captured image.
     if raw_w > 0 && (img_w as f32) > raw_wf * 1.05 {
         let scale = (img_w as f32 / raw_wf).max(1.0);
-        (raw_wf, raw_hf, scale, img_w.max(1), img_h.max(1), false)
+        ScreenMetrics {
+            logical_width: raw_wf,
+            logical_height: raw_hf,
+            scale_factor: scale,
+            physical_width: img_w.max(1),
+            physical_height: img_h.max(1),
+            physical_coords: false,
+        }
     } else {
         let phys_w = raw_w.max(img_w).max(1);
         let phys_h = raw_h.max(img_h).max(1);
-        (
-            phys_w as f32 / rep_scale,
-            phys_h as f32 / rep_scale,
-            rep_scale,
-            phys_w,
-            phys_h,
-            native_physical_coords,
-        )
+        ScreenMetrics {
+            logical_width: phys_w as f32 / rep_scale,
+            logical_height: phys_h as f32 / rep_scale,
+            scale_factor: rep_scale,
+            physical_width: phys_w,
+            physical_height: phys_h,
+            physical_coords: native_physical_coords,
+        }
     }
 }
 
@@ -77,11 +106,13 @@ fn cursor_position() -> Option<(i32, i32)> {
             x: f64,
             y: f64,
         }
+        // SAFETY: CoreGraphics / CoreFoundation C FFI functions linked on macOS with matching C ABI signatures.
         unsafe extern "C" {
             fn CGEventCreate(source: *const std::ffi::c_void) -> *const std::ffi::c_void;
             fn CGEventGetLocation(event: *const std::ffi::c_void) -> CGPoint;
             fn CFRelease(cf: *const std::ffi::c_void);
         }
+        // SAFETY: `CGEventCreate(null)` returns either null or an owned CGEventRef; we check null before calling `CGEventGetLocation` and release the non-null event via `CFRelease`.
         unsafe {
             let ev = CGEventCreate(std::ptr::null());
             if ev.is_null() {
@@ -100,10 +131,12 @@ fn cursor_position() -> Option<(i32, i32)> {
             x: i32,
             y: i32,
         }
+        // SAFETY: Standard Win32 user32 `GetCursorPos` import taking a valid out-pointer to `POINT`.
         unsafe extern "system" {
             fn GetCursorPos(lp_point: *mut Point) -> i32;
         }
         let mut pt = Point { x: 0, y: 0 };
+        // SAFETY: `&mut pt` points to stack-allocated, properly aligned `Point` initialized above.
         let ok = unsafe { GetCursorPos(&mut pt) };
         if ok != 0 {
             Some((pt.x, pt.y))
@@ -156,19 +189,25 @@ pub fn capture_primary_screen() -> Result<CapturedScreen, String> {
         .map_err(|e| format!("Screen capture failed (check Screen Recording permission): {e}"))?;
 
     let native_physical = cfg!(any(target_os = "windows", target_os = "linux"));
-    let (logical_width, logical_height, scale_factor, physical_width, physical_height, physical_coords) =
-        compute_screen_metrics(raw_w, raw_h, img.width(), img.height(), reported_scale, native_physical);
+    let metrics = compute_screen_metrics(
+        raw_w,
+        raw_h,
+        img.width(),
+        img.height(),
+        reported_scale,
+        native_physical,
+    );
 
     Ok(CapturedScreen {
         image: img,
         x,
         y,
-        logical_width,
-        logical_height,
-        scale_factor,
-        physical_width,
-        physical_height,
-        physical_coords,
+        logical_width: metrics.logical_width,
+        logical_height: metrics.logical_height,
+        scale_factor: metrics.scale_factor,
+        physical_width: metrics.physical_width,
+        physical_height: metrics.physical_height,
+        physical_coords: metrics.physical_coords,
     })
 }
 
@@ -184,24 +223,24 @@ pub fn capture_all_monitors() -> Result<Vec<CapturedScreen>, String> {
         let Ok(rh) = m.height() else { continue };
         let Ok(img) = m.capture_image() else { continue };
         let reported_scale = m.scale_factor().unwrap_or(1.0).max(1.0);
-        let (
-            logical_width,
-            logical_height,
-            scale_factor,
-            physical_width,
-            physical_height,
-            physical_coords,
-        ) = compute_screen_metrics(rw, rh, img.width(), img.height(), reported_scale, native_physical);
+        let metrics = compute_screen_metrics(
+            rw,
+            rh,
+            img.width(),
+            img.height(),
+            reported_scale,
+            native_physical,
+        );
         caps.push(CapturedScreen {
             image: img,
             x,
             y,
-            logical_width,
-            logical_height,
-            scale_factor,
-            physical_width,
-            physical_height,
-            physical_coords,
+            logical_width: metrics.logical_width,
+            logical_height: metrics.logical_height,
+            scale_factor: metrics.scale_factor,
+            physical_width: metrics.physical_width,
+            physical_height: metrics.physical_height,
+            physical_coords: metrics.physical_coords,
         });
     }
     if caps.is_empty() {
@@ -257,96 +296,107 @@ pub fn list_monitors_as_blank_screens() -> Result<Vec<CapturedScreen>, String> {
     Ok(caps)
 }
 
-/// Compute unified virtual-desktop bounds across all monitors.
-/// Returns `(min_x, min_y, total_log_w, total_log_h, unified_scale, out_w, out_h, physical_coords)`.
-pub fn compute_virtual_bounds(caps: &[CapturedScreen]) -> (i32, i32, f32, f32, f32, u32, u32, bool) {
+/// Compute unified virtual-desktop bounds across all monitors using overflow-safe `i64` coordinate arithmetic.
+pub fn compute_virtual_bounds(caps: &[CapturedScreen]) -> VirtualBounds {
     if caps.is_empty() {
-        return (0, 0, 1920.0, 1080.0, 1.0, 1920, 1080, false);
+        return VirtualBounds {
+            min_x: 0,
+            min_y: 0,
+            logical_width: 1920.0,
+            logical_height: 1080.0,
+            scale_factor: 1.0,
+            physical_width: 1920,
+            physical_height: 1080,
+            physical_coords: false,
+        };
     }
     if caps.len() == 1 {
         let c = &caps[0];
-        return (
-            c.x,
-            c.y,
-            c.logical_width,
-            c.logical_height,
-            c.scale_factor,
-            c.physical_width.max(1),
-            c.physical_height.max(1),
-            c.physical_coords,
-        );
+        return VirtualBounds {
+            min_x: c.x,
+            min_y: c.y,
+            logical_width: c.logical_width,
+            logical_height: c.logical_height,
+            scale_factor: c.scale_factor,
+            physical_width: c.physical_width.max(1),
+            physical_height: c.physical_height.max(1),
+            physical_coords: c.physical_coords,
+        };
     }
 
     let any_physical = caps.iter().any(|c| c.physical_coords);
     let unified_scale = caps.iter().map(|c| c.scale_factor).fold(1.0_f32, f32::max);
     let min_x = caps.iter().map(|c| c.x).min().unwrap_or(0);
     let min_y = caps.iter().map(|c| c.y).min().unwrap_or(0);
+    let min_x64 = i64::from(min_x);
+    let min_y64 = i64::from(min_y);
 
     if any_physical {
         let max_x = caps
             .iter()
-            .map(|c| c.x + c.physical_width as i32)
+            .map(|c| i64::from(c.x) + i64::from(c.physical_width))
             .max()
             .unwrap_or(1920);
         let max_y = caps
             .iter()
-            .map(|c| c.y + c.physical_height as i32)
+            .map(|c| i64::from(c.y) + i64::from(c.physical_height))
             .max()
             .unwrap_or(1080);
-        let out_w = (max_x - min_x).max(1) as u32;
-        let out_h = (max_y - min_y).max(1) as u32;
+        let span_w = (max_x - min_x64).clamp(1, i64::from(u32::MAX));
+        let span_h = (max_y - min_y64).clamp(1, i64::from(u32::MAX));
+        let out_w = u32::try_from(span_w).unwrap_or(1);
+        let out_h = u32::try_from(span_h).unwrap_or(1);
         let total_log_w = out_w as f32 / unified_scale;
         let total_log_h = out_h as f32 / unified_scale;
-        (
+        VirtualBounds {
             min_x,
             min_y,
-            total_log_w,
-            total_log_h,
-            unified_scale,
-            out_w,
-            out_h,
-            true,
-        )
+            logical_width: total_log_w,
+            logical_height: total_log_h,
+            scale_factor: unified_scale,
+            physical_width: out_w,
+            physical_height: out_h,
+            physical_coords: true,
+        }
     } else {
         let max_x = caps
             .iter()
-            .map(|c| c.x + c.logical_width.round() as i32)
+            .map(|c| i64::from(c.x) + c.logical_width.round() as i64)
             .max()
             .unwrap_or(1920);
         let max_y = caps
             .iter()
-            .map(|c| c.y + c.logical_height.round() as i32)
+            .map(|c| i64::from(c.y) + c.logical_height.round() as i64)
             .max()
             .unwrap_or(1080);
-        let total_log_w = (max_x - min_x).max(1) as f32;
-        let total_log_h = (max_y - min_y).max(1) as f32;
+        let total_log_w = (max_x - min_x64).max(1) as f32;
+        let total_log_h = (max_y - min_y64).max(1) as f32;
         let out_w = (total_log_w * unified_scale).round().max(1.0) as u32;
         let out_h = (total_log_h * unified_scale).round().max(1.0) as u32;
-        (
+        VirtualBounds {
             min_x,
             min_y,
-            total_log_w,
-            total_log_h,
-            unified_scale,
-            out_w,
-            out_h,
-            false,
-        )
+            logical_width: total_log_w,
+            logical_height: total_log_h,
+            scale_factor: unified_scale,
+            physical_width: out_w,
+            physical_height: out_h,
+            physical_coords: false,
+        }
     }
 }
 
 /// Map a monitor pane's origin into unified virtual-desktop logical coordinates.
 pub fn pane_virtual_offset(screen: &CapturedScreen, virtual_screen: &CapturedScreen) -> Vec2 {
+    let dx = i64::from(screen.x) - i64::from(virtual_screen.x);
+    let dy = i64::from(screen.y) - i64::from(virtual_screen.y);
     if virtual_screen.physical_coords {
         Vec2::new(
-            (screen.x - virtual_screen.x) as f32 / virtual_screen.scale_factor,
-            (screen.y - virtual_screen.y) as f32 / virtual_screen.scale_factor,
+            dx as f32 / virtual_screen.scale_factor,
+            dy as f32 / virtual_screen.scale_factor,
         )
     } else {
-        Vec2::new(
-            (screen.x - virtual_screen.x) as f32,
-            (screen.y - virtual_screen.y) as f32,
-        )
+        Vec2::new(dx as f32, dy as f32)
     }
 }
 
@@ -361,19 +411,18 @@ pub fn pane_virtual_scale(screen: &CapturedScreen, virtual_screen: &CapturedScre
 
 /// Compute unified virtual-desktop bounds without allocating a full-resolution composite image.
 pub fn composite_monitors_metadata(caps: &[CapturedScreen]) -> CapturedScreen {
-    let (x, y, logical_width, logical_height, scale_factor, physical_width, physical_height, physical_coords) =
-        compute_virtual_bounds(caps);
+    let bounds = compute_virtual_bounds(caps);
 
     CapturedScreen {
         image: RgbaImage::new(1, 1),
-        x,
-        y,
-        logical_width,
-        logical_height,
-        scale_factor,
-        physical_width,
-        physical_height,
-        physical_coords,
+        x: bounds.min_x,
+        y: bounds.min_y,
+        logical_width: bounds.logical_width,
+        logical_height: bounds.logical_height,
+        scale_factor: bounds.scale_factor,
+        physical_width: bounds.physical_width,
+        physical_height: bounds.physical_height,
+        physical_coords: bounds.physical_coords,
     }
 }
 
@@ -394,24 +443,29 @@ pub fn composite_monitors(caps: &[CapturedScreen]) -> CapturedScreen {
         };
     }
 
-    let (min_x, min_y, total_log_w, total_log_h, unified_scale, out_w, out_h, physical_coords) =
-        compute_virtual_bounds(caps);
-    let mut canvas = RgbaImage::from_pixel(out_w, out_h, image::Rgba([0, 0, 0, 255]));
+    let bounds = compute_virtual_bounds(caps);
+    let mut canvas = RgbaImage::from_pixel(
+        bounds.physical_width,
+        bounds.physical_height,
+        image::Rgba([0, 0, 0, 255]),
+    );
 
     for c in caps {
-        let (target_w, target_h, dx, dy) = if physical_coords {
+        let (target_w, target_h, dx, dy) = if bounds.physical_coords {
             (
                 c.physical_width.max(1),
                 c.physical_height.max(1),
-                (c.x - min_x) as i64,
-                (c.y - min_y) as i64,
+                i64::from(c.x) - i64::from(bounds.min_x),
+                i64::from(c.y) - i64::from(bounds.min_y),
             )
         } else {
             (
-                (c.logical_width * unified_scale).round().max(1.0) as u32,
-                (c.logical_height * unified_scale).round().max(1.0) as u32,
-                ((c.x - min_x) as f32 * unified_scale).round() as i64,
-                ((c.y - min_y) as f32 * unified_scale).round() as i64,
+                (c.logical_width * bounds.scale_factor).round().max(1.0) as u32,
+                (c.logical_height * bounds.scale_factor).round().max(1.0) as u32,
+                ((i64::from(c.x) - i64::from(bounds.min_x)) as f32 * bounds.scale_factor).round()
+                    as i64,
+                ((i64::from(c.y) - i64::from(bounds.min_y)) as f32 * bounds.scale_factor).round()
+                    as i64,
             )
         };
 
@@ -430,14 +484,14 @@ pub fn composite_monitors(caps: &[CapturedScreen]) -> CapturedScreen {
 
     CapturedScreen {
         image: canvas,
-        x: min_x,
-        y: min_y,
-        logical_width: total_log_w,
-        logical_height: total_log_h,
-        scale_factor: unified_scale,
-        physical_width: out_w,
-        physical_height: out_h,
-        physical_coords,
+        x: bounds.min_x,
+        y: bounds.min_y,
+        logical_width: bounds.logical_width,
+        logical_height: bounds.logical_height,
+        scale_factor: bounds.scale_factor,
+        physical_width: bounds.physical_width,
+        physical_height: bounds.physical_height,
+        physical_coords: bounds.physical_coords,
     }
 }
 
@@ -703,23 +757,125 @@ mod tests {
 
     #[test]
     fn screen_metrics_macos_retina_and_125_scaling() {
-        let (lw, lh, sf, pw, ph, phys) = compute_screen_metrics(1440, 900, 2880, 1800, 2.0, false);
-        assert_eq!((lw, lh, sf, pw, ph, phys), (1440.0, 900.0, 2.0, 2880, 1800, false));
+        let m = compute_screen_metrics(1440, 900, 2880, 1800, 2.0, false);
+        assert_eq!(
+            m,
+            ScreenMetrics {
+                logical_width: 1440.0,
+                logical_height: 900.0,
+                scale_factor: 2.0,
+                physical_width: 2880,
+                physical_height: 1800,
+                physical_coords: false,
+            }
+        );
 
         // 1.25x Retina on macOS must still be recognized as logical Monitor + physical Image
-        let (lw, lh, sf, pw, ph, phys) = compute_screen_metrics(1920, 1080, 2400, 1350, 1.25, false);
-        assert_eq!((lw, lh, sf, pw, ph, phys), (1920.0, 1080.0, 1.25, 2400, 1350, false));
+        let m125 = compute_screen_metrics(1920, 1080, 2400, 1350, 1.25, false);
+        assert_eq!(
+            m125,
+            ScreenMetrics {
+                logical_width: 1920.0,
+                logical_height: 1080.0,
+                scale_factor: 1.25,
+                physical_width: 2400,
+                physical_height: 1350,
+                physical_coords: false,
+            }
+        );
     }
 
     #[test]
     fn screen_metrics_windows_hidpi() {
-        let (lw, lh, sf, pw, ph, phys) = compute_screen_metrics(1920, 1080, 1920, 1080, 1.25, true);
-        assert!((lw - 1536.0).abs() < 0.01);
-        assert!((lh - 864.0).abs() < 0.01);
-        assert_eq!((sf, pw, ph, phys), (1.25, 1920, 1080, true));
+        let m = compute_screen_metrics(1920, 1080, 1920, 1080, 1.25, true);
+        assert!((m.logical_width - 1536.0).abs() < 0.01);
+        assert!((m.logical_height - 864.0).abs() < 0.01);
+        assert_eq!((m.scale_factor, m.physical_width, m.physical_height, m.physical_coords), (1.25, 1920, 1080, true));
 
-        let (lw, lh, sf, pw, ph, phys) = compute_screen_metrics(3840, 2160, 3840, 2160, 2.0, true);
-        assert_eq!((lw, lh, sf, pw, ph, phys), (1920.0, 1080.0, 2.0, 3840, 2160, true));
+        let m2 = compute_screen_metrics(3840, 2160, 3840, 2160, 2.0, true);
+        assert_eq!(
+            m2,
+            ScreenMetrics {
+                logical_width: 1920.0,
+                logical_height: 1080.0,
+                scale_factor: 2.0,
+                physical_width: 3840,
+                physical_height: 2160,
+                physical_coords: true,
+            }
+        );
+    }
+
+    #[test]
+    fn negative_monitor_offsets_left_and_above_primary() {
+        let left_above = CapturedScreen {
+            image: RgbaImage::from_pixel(1920, 1080, image::Rgba([25, 50, 75, 255])),
+            x: -1920,
+            y: -1080,
+            logical_width: 1920.0,
+            logical_height: 1080.0,
+            scale_factor: 1.0,
+            physical_width: 1920,
+            physical_height: 1080,
+            physical_coords: true,
+        };
+        let primary = CapturedScreen {
+            image: RgbaImage::from_pixel(3840, 2160, image::Rgba([10, 20, 30, 255])),
+            x: 0,
+            y: 0,
+            logical_width: 1920.0,
+            logical_height: 1080.0,
+            scale_factor: 2.0,
+            physical_width: 3840,
+            physical_height: 2160,
+            physical_coords: true,
+        };
+
+        let bounds = compute_virtual_bounds(&[left_above, primary]);
+        assert_eq!(bounds.min_x, -1920);
+        assert_eq!(bounds.min_y, -1080);
+        assert_eq!(bounds.physical_width, 5760);
+        assert_eq!(bounds.physical_height, 3240);
+        assert_eq!(bounds.scale_factor, 2.0);
+        assert!(bounds.physical_coords);
+
+        let virt = composite_monitors_metadata(&[
+            CapturedScreen {
+                image: RgbaImage::new(1, 1),
+                x: -1920,
+                y: -1080,
+                logical_width: 1920.0,
+                logical_height: 1080.0,
+                scale_factor: 1.0,
+                physical_width: 1920,
+                physical_height: 1080,
+                physical_coords: true,
+            },
+            CapturedScreen {
+                image: RgbaImage::new(1, 1),
+                x: 0,
+                y: 0,
+                logical_width: 1920.0,
+                logical_height: 1080.0,
+                scale_factor: 2.0,
+                physical_width: 3840,
+                physical_height: 2160,
+                physical_coords: true,
+            },
+        ]);
+        let primary_meta = CapturedScreen {
+            image: RgbaImage::new(1, 1),
+            x: 0,
+            y: 0,
+            logical_width: 1920.0,
+            logical_height: 1080.0,
+            scale_factor: 2.0,
+            physical_width: 3840,
+            physical_height: 2160,
+            physical_coords: true,
+        };
+        assert_eq!(pane_virtual_offset(&primary_meta, &virt), Vec2::new(960.0, 540.0));
+        assert_eq!(pane_virtual_scale(&primary_meta, &virt), 1.0);
     }
 
     #[test]
